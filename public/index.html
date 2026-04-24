@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GeoFS Autopilot</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>GeoFS autopilot</h1>
+
+      <section class="card">
+        <div class="row"><span>Bridge</span><strong id="bridge-status">Disconnected</strong></div>
+        <div class="row"><span>Aircraft</span><strong id="aircraft-name">-</strong></div>
+        <div class="row"><span>Autopilot</span><strong id="autopilot-status">-</strong></div>
+        <div class="row"><span>Mode</span><strong id="autopilot-mode">-</strong></div>
+        <div class="row"><span>Altitude</span><strong id="altitude-readout">-</strong></div>
+        <div class="row"><span>Heading</span><strong id="heading-readout">-</strong></div>
+        <div class="row"><span>Speed</span><strong id="speed-readout">-</strong></div>
+        <div class="row"><span>Vertical speed</span><strong id="vs-readout">-</strong></div>
+      </section>
+
+      <section class="card controls">
+        <div class="buttons">
+          <button data-command="turn_on">Autopilot on</button>
+          <button data-command="turn_off" class="secondary">Autopilot off</button>
+        </div>
+
+        <label>Heading
+          <div class="field">
+            <input id="heading-input" type="number" step="1" min="0" max="360" placeholder="270">
+            <button data-command="set_heading" data-input="heading-input">Set</button>
+          </div>
+        </label>
+
+        <label>Altitude ft
+          <div class="field">
+            <input id="altitude-input" type="number" step="100" placeholder="4500">
+            <button data-command="set_altitude" data-input="altitude-input">Set</button>
+          </div>
+        </label>
+
+        <label>Speed kt
+          <div class="field">
+            <input id="speed-input" type="number" step="1" min="0" placeholder="120">
+            <button data-command="set_speed" data-input="speed-input">Set</button>
+          </div>
+        </label>
+
+        <label>Vertical speed fpm
+          <div class="field">
+            <input id="vs-input" type="number" step="100" placeholder="500">
+            <button data-command="set_vertical_speed" data-input="vs-input">Set</button>
+          </div>
+        </label>
+      </section>
+
+      <p id="message-log">Waiting for bridge.</p>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,110 @@
+:root {
+  --bg: #f5f5f5;
+  --card: #ffffff;
+  --text: #111111;
+  --muted: #666666;
+  --line: #dcdcdc;
+  --accent: #222222;
+  --ok: #0a7a33;
+  --bad: #b42318;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.wrap {
+  width: min(720px, calc(100vw - 24px));
+  margin: 0 auto;
+  padding: 24px 0 40px;
+}
+
+h1 {
+  margin: 0 0 16px;
+  font-size: 28px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.row:last-child {
+  border-bottom: 0;
+}
+
+.controls label {
+  display: block;
+  margin-bottom: 12px;
+  color: var(--muted);
+}
+
+.field,
+.buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+input,
+button {
+  border: 1px solid var(--line);
+  font: inherit;
+  border-radius: 6px;
+}
+
+input {
+  width: 100%;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+button {
+  padding: 10px 12px;
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: white;
+  color: var(--text);
+}
+
+#message-log {
+  margin: 0;
+  color: var(--muted);
+}
+
+.ok {
+  color: var(--ok);
+}
+
+.bad {
+  color: var(--bad);
+}
+
+@media (max-width: 720px) {
+  .field,
+  .buttons {
+    flex-direction: column;
+  }
+}
