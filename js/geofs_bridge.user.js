@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GeoFS Bridge
 // @namespace    geofs_pilot
-// @version      1.0.0
+// @version      1.1.0
 // @description  Connects GeoFS to a local autopilot control app.
 // @match        *://www.geo-fs.com/*
 // @match        *://geo-fs.com/*
@@ -21,7 +21,7 @@
     reconnectMs: 3000,
     telemetryHz: 30,
     tag: '[GeoFS Bridge]',
-    version: '1.0.0',
+    version: '1.1.0',
   };
 
   // ===========================================================================
@@ -31,6 +31,8 @@
   const state = {
     ws: null,
     connected: false,
+    bridgeId: null,
+    label: '',
     seq: 0,
     lastTelemetrySendMs: 0,
     frameCallbackInstalled: false,
@@ -59,6 +61,31 @@
 
   function nowMs() {
     return performance.now();
+  }
+
+  function getBridgeId() {
+    const key = 'geofs_bridge_id';
+    let value = safeRead(() => window.sessionStorage.getItem(key), '');
+
+    if (!value) {
+      value = `tab_${Math.random().toString(36).slice(2, 10)}`;
+      safeRead(() => window.sessionStorage.setItem(key, value));
+    }
+
+    return value;
+  }
+
+  function getAircraftName() {
+    return safeRead(
+      () => window.geofs.aircraft.instance.aircraftRecord.name,
+      ''
+    );
+  }
+
+  function getBridgeLabel() {
+    const aircraft = getAircraftName() || 'GeoFS';
+    const suffix = state.bridgeId ? state.bridgeId.slice(-4) : 'tab';
+    return `${aircraft} ${suffix}`;
   }
 
   function numberOrNull(value) {
@@ -106,6 +133,8 @@
 
     return {
       type: 'telemetry',
+      bridge_id: state.bridgeId,
+      label: getBridgeLabel(),
       seq: state.seq++,
       ts_ms: nowMs(),
       aircraft: safeRead(() => aircraft.aircraftRecord.name, ''),
@@ -161,16 +190,17 @@
 
     state.ws.onopen = () => {
       state.connected = true;
+      state.label = getBridgeLabel();
       log('Connected');
 
       send({
         type: 'hello',
+        bridge_id: state.bridgeId,
         version: CONFIG.version,
+        label: state.label,
+        page_title: safeRead(() => window.document.title, ''),
         mode: 'telemetry_plus_autopilot_commands',
-        aircraft: safeRead(
-          () => window.geofs.aircraft.instance.aircraftRecord.name,
-          ''
-        ),
+        aircraft: getAircraftName(),
       });
     };
 
@@ -221,7 +251,9 @@
         break;
 
       case 'autopilot_command':
-        handleAutopilotCommand(msg);
+        if (msg.bridge_id === state.bridgeId) {
+          handleAutopilotCommand(msg);
+        }
         break;
 
       default:
@@ -329,6 +361,8 @@
   // ===========================================================================
 
   waitForGeoFS(() => {
+    state.bridgeId = getBridgeId();
+    state.label = getBridgeLabel();
     installTelemetryFrameCallback();
     connectWebSocket();
 

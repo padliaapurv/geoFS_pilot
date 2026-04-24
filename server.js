@@ -15,10 +15,7 @@ const MIME_TYPES = {
 };
 
 const state = {
-  bridgeSocket: null,
-  lastTelemetry: null,
-  lastHello: null,
-  lastBridgeSeenAt: null,
+  bridges: new Map(),
 };
 
 function sendJson(ws, payload) {
@@ -38,9 +35,38 @@ function broadcastUi(payload) {
 function currentSnapshot() {
   return {
     type: 'snapshot',
-    bridge_connected: Boolean(state.bridgeSocket),
-    telemetry: state.lastTelemetry,
+    instances: Array.from(state.bridges.values())
+      .map((bridge) => ({
+        bridge_id: bridge.bridgeId,
+        connected: Boolean(bridge.ws && bridge.ws.readyState === bridge.ws.OPEN),
+        label: bridge.label || bridge.hello?.label || bridge.telemetry?.label || bridge.bridgeId,
+        hello: bridge.hello,
+        telemetry: bridge.telemetry,
+        last_seen_at: bridge.lastSeenAt,
+      }))
+      .sort((a, b) => {
+        if (a.connected !== b.connected) return a.connected ? -1 : 1;
+        return (a.label || '').localeCompare(b.label || '');
+      }),
   };
+}
+
+function getBridgeState(bridgeId) {
+  let bridge = state.bridges.get(bridgeId);
+
+  if (!bridge) {
+    bridge = {
+      bridgeId,
+      ws: null,
+      hello: null,
+      telemetry: null,
+      lastSeenAt: null,
+      label: bridgeId,
+    };
+    state.bridges.set(bridgeId, bridge);
+  }
+
+  return bridge;
 }
 
 function serveFile(req, res) {
@@ -88,13 +114,7 @@ const bridgeWss = new WebSocketServer({ noServer: true });
 const uiWss = new WebSocketServer({ noServer: true });
 
 bridgeWss.on('connection', (ws) => {
-  if (state.bridgeSocket && state.bridgeSocket !== ws) {
-    state.bridgeSocket.close();
-  }
-
-  state.bridgeSocket = ws;
-  state.lastBridgeSeenAt = Date.now();
-  broadcastUi(currentSnapshot());
+  let activeBridgeId = null;
 
   ws.on('message', (raw) => {
     let message;
@@ -104,22 +124,37 @@ bridgeWss.on('connection', (ws) => {
       return;
     }
 
-    state.lastBridgeSeenAt = Date.now();
+    const bridgeId = message.bridge_id;
+    if (!bridgeId) return;
+
+    const bridge = getBridgeState(bridgeId);
+    bridge.lastSeenAt = Date.now();
+    bridge.label = message.label || bridge.label;
+    bridge.ws = ws;
+    activeBridgeId = bridgeId;
 
     switch (message.type) {
       case 'hello':
-        state.lastHello = message;
+        bridge.hello = message;
+        bridge.label = message.label || bridge.label;
         sendJson(ws, { type: 'ack', version: '3.0.0' });
         broadcastUi(currentSnapshot());
         break;
 
       case 'telemetry':
-        state.lastTelemetry = message;
+        bridge.telemetry = message;
+        bridge.label = message.label || bridge.label;
         broadcastUi({
           type: 'telemetry',
-          telemetry: message,
-          bridge_connected: true,
-          last_seen_at: state.lastBridgeSeenAt,
+          bridge_id: bridge.bridgeId,
+          instance: {
+            bridge_id: bridge.bridgeId,
+            connected: true,
+            label: bridge.label,
+            hello: bridge.hello,
+            telemetry: bridge.telemetry,
+            last_seen_at: bridge.lastSeenAt,
+          },
         });
         break;
 
@@ -132,8 +167,12 @@ bridgeWss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    if (state.bridgeSocket === ws) {
-      state.bridgeSocket = null;
+    if (activeBridgeId) {
+      const bridge = state.bridges.get(activeBridgeId);
+      if (bridge && bridge.ws === ws) {
+        bridge.ws = null;
+        bridge.lastSeenAt = Date.now();
+      }
     }
     broadcastUi(currentSnapshot());
   });
@@ -152,19 +191,31 @@ uiWss.on('connection', (ws) => {
 
     if (message.type !== 'autopilot_command') return;
 
-    if (!state.bridgeSocket) {
+    const bridgeId = message.bridge_id;
+    if (!bridgeId) {
       sendJson(ws, {
         type: 'command_result',
         ok: false,
-        error: 'GeoFS bridge is not connected',
+        error: 'No GeoFS instance selected',
       });
       return;
     }
 
-    sendJson(state.bridgeSocket, message);
+    const bridge = state.bridges.get(bridgeId);
+    if (!bridge || !bridge.ws || bridge.ws.readyState !== bridge.ws.OPEN) {
+      sendJson(ws, {
+        type: 'command_result',
+        ok: false,
+        error: 'Selected GeoFS instance is not connected',
+      });
+      return;
+    }
+
+    sendJson(bridge.ws, message);
     sendJson(ws, {
       type: 'command_result',
       ok: true,
+      bridge_id: bridgeId,
       command: message.command,
       value: message.value ?? null,
     });
