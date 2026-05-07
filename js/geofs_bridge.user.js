@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GeoFS Bridge
 // @namespace    geofs_pilot
-// @version      1.1.0
+// @version      1.2.0
 // @description  Connects GeoFS to a local autopilot control app.
 // @match        *://www.geo-fs.com/*
 // @match        *://geo-fs.com/*
@@ -21,7 +21,7 @@
     reconnectMs: 3000,
     telemetryHz: 30,
     tag: '[GeoFS Bridge]',
-    version: '1.1.0',
+    version: '1.2.0',
   };
 
   // ===========================================================================
@@ -93,6 +93,18 @@
     return Number.isFinite(n) ? n : null;
   }
 
+  function feetToMeters(feet) {
+    return Number(feet) * 0.3048;
+  }
+
+  function metersToFeet(meters) {
+    return Number(meters) / 0.3048;
+  }
+
+  function normalizeHeading(degrees) {
+    return ((Number(degrees) % 360) + 360) % 360;
+  }
+
   // ===========================================================================
   // GeoFS readiness
   // ===========================================================================
@@ -127,9 +139,9 @@
     const g = window.geofs;
     const aircraft = safeRead(() => g.aircraft.instance, {});
     const anim = safeRead(() => g.animation.values, {});
-    const controls = window.controls || {};
     const autopilot = safeRead(() => g.autopilot, {});
-    const altitudeFt = anim.altitude || 0;
+    const lla = safeRead(() => aircraft.llaLocation, []);
+    const altitudeFt = anim.altitude || metersToFeet(lla[2] || 0) || 0;
 
     return {
       type: 'telemetry',
@@ -138,9 +150,11 @@
       seq: state.seq++,
       ts_ms: nowMs(),
       aircraft: safeRead(() => aircraft.aircraftRecord.name, ''),
+      lat_deg: numberOrNull(lla[0]),
+      lon_deg: numberOrNull(lla[1]),
       altitude_ft: altitudeFt,
-      heading_deg: anim.heading360 || 0,
-      speed_kts: anim.kias || 0,
+      heading_deg: anim.heading360 || safeRead(() => aircraft.htr[0], 0) || 0,
+      speed_kts: anim.kias || anim.ktas || 0,
       vertical_speed_fpm: anim.verticalSpeed || 0,
       autopilot: {
         on: !!autopilot.on,
@@ -199,7 +213,7 @@
         version: CONFIG.version,
         label: state.label,
         page_title: safeRead(() => window.document.title, ''),
-        mode: 'telemetry_plus_autopilot_commands',
+        mode: 'formation_telemetry_plus_autopilot_commands',
         aircraft: getAircraftName(),
       });
     };
@@ -263,6 +277,67 @@
   }
 
   // ===========================================================================
+  // Pose reset
+  // ===========================================================================
+
+  function setAircraftPose(pose) {
+    const aircraft = safeRead(() => window.geofs.aircraft.instance, null);
+    if (!aircraft || !pose) return;
+
+    const lat = numberOrNull(pose.lat_deg);
+    const lon = numberOrNull(pose.lon_deg);
+    const altitudeFt = numberOrNull(pose.altitude_ft);
+    const heading = normalizeHeading(pose.heading_deg || 0);
+
+    if (lat == null || lon == null || altitudeFt == null) return;
+
+    const lla = [lat, lon, feetToMeters(altitudeFt)];
+
+    if (typeof window.geofs?.api?.setAircraftPosition === 'function') {
+      window.geofs.api.setAircraftPosition(lla, heading);
+    } else {
+      aircraft.llaLocation = lla;
+      if (Array.isArray(aircraft.htr)) {
+        aircraft.htr[0] = heading;
+        aircraft.htr[1] = 0;
+        aircraft.htr[2] = 0;
+      } else {
+        aircraft.htr = [heading, 0, 0];
+      }
+    }
+
+    if (Array.isArray(aircraft.rigidBody?.velocity)) {
+      aircraft.rigidBody.velocity = [0, 0, 0];
+    }
+    if (typeof aircraft.rigidBody?.setVelocity === 'function') {
+      aircraft.rigidBody.setVelocity([0, 0, 0]);
+    }
+
+    safeRead(() => window.geofs.camera?.update?.(0));
+  }
+
+  function resetToPose(pose) {
+    setAircraftPose(pose);
+    const autopilot = getAutopilot();
+    const altitude = numberOrNull(pose?.altitude_ft);
+    const speed = numberOrNull(pose?.speed_kts);
+    const heading = numberOrNull(pose?.heading_deg);
+
+    if (!autopilot) return;
+    ensureAutopilotOn(autopilot);
+    if (heading != null && typeof autopilot.setCourse === 'function') {
+      setAutopilotMode(autopilot, 'HDG');
+      autopilot.setCourse(heading);
+    }
+    if (altitude != null && typeof autopilot.setAltitude === 'function') {
+      autopilot.setAltitude(altitude);
+    }
+    if (speed != null && typeof autopilot.setSpeed === 'function') {
+      autopilot.setSpeed(speed);
+    }
+  }
+
+  // ===========================================================================
   // Autopilot commands
   // ===========================================================================
 
@@ -287,7 +362,7 @@
   function handleAutopilotCommand(msg) {
     const autopilot = getAutopilot();
 
-    if (!autopilot) {
+    if (!autopilot && msg.command !== 'reset_pose') {
       warn('GeoFS autopilot unavailable');
       return;
     }
@@ -296,6 +371,11 @@
 
     try {
       switch (msg.command) {
+        case 'reset_pose':
+          resetToPose(msg.pose);
+          log('Aircraft reset to formation pose:', msg.pose);
+          break;
+
         case 'turn_on':
           ensureAutopilotOn(autopilot);
           log('Autopilot turned on');

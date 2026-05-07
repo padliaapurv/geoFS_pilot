@@ -1,160 +1,232 @@
 (function () {
   const instanceListEl = document.getElementById('instance-list');
-  const selectedLabelEl = document.getElementById('selected-label');
   const bridgeStatusEl = document.getElementById('bridge-status');
-  const aircraftNameEl = document.getElementById('aircraft-name');
-  const autopilotStatusEl = document.getElementById('autopilot-status');
-  const autopilotModeEl = document.getElementById('autopilot-mode');
-  const altitudeReadoutEl = document.getElementById('altitude-readout');
-  const headingReadoutEl = document.getElementById('heading-readout');
-  const speedReadoutEl = document.getElementById('speed-readout');
-  const vsReadoutEl = document.getElementById('vs-readout');
+  const leaderLabelEl = document.getElementById('leader-label');
+  const followerLabelEl = document.getElementById('follower-label');
+  const formationStatusEl = document.getElementById('formation-status');
+  const spacingReadoutEl = document.getElementById('spacing-readout');
+  const leaderTelemetryEl = document.getElementById('leader-telemetry');
+  const followerTelemetryEl = document.getElementById('follower-telemetry');
   const messageLogEl = document.getElementById('message-log');
-  const commandButtons = Array.from(
-    document.querySelectorAll('button[data-command]')
-  );
+  const resetFormationButton = document.getElementById('reset-formation');
+  const followToggleButton = document.getElementById('follow-toggle');
+
+  const CONFIG = {
+    controlHz: 4,
+    commandIntervalMs: 250,
+    requiredAircraft: 2,
+    desiredSpacingNm: 0.75,
+    startPose: {
+      lat_deg: 37.618999,
+      lon_deg: -122.375,
+      altitude_ft: 3500,
+      heading_deg: 270,
+      speed_kts: 150,
+    },
+    gains: {
+      closureKtsPerNm: 35,
+      maxClosureKts: 35,
+    },
+  };
 
   let uiSocket = null;
-  let selectedBridgeId = null;
   let instances = [];
+  let leaderBridgeId = null;
+  let followerBridgeId = null;
+  let controlEnabled = true;
+  let initialResetSent = false;
+  let lastCommandSentAt = 0;
+  let controlTimer = null;
   const instanceNodes = new Map();
 
   function setMessage(text) {
     messageLogEl.textContent = text;
   }
 
-  function setControlsEnabled(enabled) {
-    commandButtons.forEach((button) => {
-      button.disabled = !enabled;
-    });
+  function setBridgeStatus(connectedCount) {
+    const ready = connectedCount >= CONFIG.requiredAircraft;
+    bridgeStatusEl.textContent = ready
+      ? `${connectedCount} aircraft connected`
+      : `${connectedCount}/${CONFIG.requiredAircraft} aircraft connected`;
+    bridgeStatusEl.className = ready ? 'ok' : 'bad';
   }
 
-  function setConnected(connected) {
-    bridgeStatusEl.textContent = connected ? 'Connected' : 'Disconnected';
-    bridgeStatusEl.className = connected ? 'ok' : 'bad';
+  function formatNumber(value, suffix, digits = 0) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '-';
+    return `${number.toFixed(digits)} ${suffix}`;
   }
 
-  function formatNumber(value, suffix) {
-    if (value == null || Number.isNaN(Number(value))) return '-';
-    return `${Math.round(Number(value))} ${suffix}`;
+  function normalizeHeading(degrees) {
+    return ((Number(degrees) % 360) + 360) % 360;
   }
 
-  function resetDetails() {
-    selectedLabelEl.textContent = 'None';
-    aircraftNameEl.textContent = '-';
-    altitudeReadoutEl.textContent = '-';
-    headingReadoutEl.textContent = '-';
-    speedReadoutEl.textContent = '-';
-    vsReadoutEl.textContent = '-';
-    autopilotStatusEl.textContent = '-';
-    autopilotModeEl.textContent = '-';
+  function shortestHeadingDelta(fromDeg, toDeg) {
+    return ((normalizeHeading(toDeg) - normalizeHeading(fromDeg) + 540) % 360) - 180;
   }
 
-  function renderTelemetry(telemetry, label) {
-    if (!telemetry) {
-      resetDetails();
-      return;
-    }
-
-    selectedLabelEl.textContent = label || telemetry.label || '-';
-    aircraftNameEl.textContent = telemetry.aircraft || '-';
-    altitudeReadoutEl.textContent = formatNumber(telemetry.altitude_ft, 'ft');
-    headingReadoutEl.textContent = formatNumber(telemetry.heading_deg, 'deg');
-    speedReadoutEl.textContent = formatNumber(telemetry.speed_kts, 'kt');
-    vsReadoutEl.textContent = formatNumber(telemetry.vertical_speed_fpm, 'fpm');
-
-    const autopilot = telemetry.autopilot || {};
-    autopilotStatusEl.textContent = autopilot.on ? 'On' : 'Off';
-    autopilotModeEl.textContent = autopilot.mode || '-';
+  function degToRad(degrees) {
+    return (Number(degrees) * Math.PI) / 180;
   }
 
-  function getSelectedInstance() {
+  function radToDeg(radians) {
+    return (Number(radians) * 180) / Math.PI;
+  }
+
+  function offsetPositionByNm(origin, bearingDeg, distanceNm) {
+    const radiusNm = 3440.065;
+    const lat1 = degToRad(origin.lat_deg);
+    const lon1 = degToRad(origin.lon_deg);
+    const bearing = degToRad(bearingDeg);
+    const angularDistance = distanceNm / radiusNm;
+
+    const lat2 = Math.asin(
+      Math.sin(lat1) * Math.cos(angularDistance) +
+        Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearing)
+    );
+    const lon2 =
+      lon1 +
+      Math.atan2(
+        Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(lat1),
+        Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2)
+      );
+
+    return {
+      lat_deg: radToDeg(lat2),
+      lon_deg: ((radToDeg(lon2) + 540) % 360) - 180,
+    };
+  }
+
+  function distanceNm(a, b) {
+    if (!hasPosition(a) || !hasPosition(b)) return null;
+    const radiusNm = 3440.065;
+    const lat1 = degToRad(a.lat_deg);
+    const lat2 = degToRad(b.lat_deg);
+    const dLat = degToRad(b.lat_deg - a.lat_deg);
+    const dLon = degToRad(b.lon_deg - a.lon_deg);
+    const h =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    return 2 * radiusNm * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+  }
+
+  function bearingDeg(a, b) {
+    if (!hasPosition(a) || !hasPosition(b)) return null;
+    const lat1 = degToRad(a.lat_deg);
+    const lat2 = degToRad(b.lat_deg);
+    const dLon = degToRad(b.lon_deg - a.lon_deg);
+    const y = Math.sin(dLon) * Math.cos(lat2);
+    const x =
+      Math.cos(lat1) * Math.sin(lat2) -
+      Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+    return normalizeHeading(radToDeg(Math.atan2(y, x)));
+  }
+
+  function hasPosition(telemetry) {
     return (
-      instances.find((instance) => instance.bridge_id === selectedBridgeId) || null
+      telemetry &&
+      Number.isFinite(Number(telemetry.lat_deg)) &&
+      Number.isFinite(Number(telemetry.lon_deg))
     );
   }
 
-  function syncSelection() {
-    const connected = instances.filter((instance) => instance.connected);
-    const selected = getSelectedInstance();
+  function connectedInstances() {
+    return instances.filter((instance) => instance.connected);
+  }
 
-    if (selected && selected.connected) return;
+  function instanceById(bridgeId) {
+    return instances.find((instance) => instance.bridge_id === bridgeId) || null;
+  }
 
-    if (connected.length === 1) {
-      selectedBridgeId = connected[0].bridge_id;
-      return;
+  function syncRoles() {
+    const connected = connectedInstances();
+    if (!connected.some((instance) => instance.bridge_id === leaderBridgeId)) {
+      leaderBridgeId = connected[0]?.bridge_id || null;
     }
-
-    if (!selected || !selected.connected) {
-      selectedBridgeId = null;
+    if (
+      !connected.some((instance) => instance.bridge_id === followerBridgeId) ||
+      followerBridgeId === leaderBridgeId
+    ) {
+      followerBridgeId =
+        connected.find((instance) => instance.bridge_id !== leaderBridgeId)?.bridge_id ||
+        null;
     }
+  }
+
+  function setRole(bridgeId, role) {
+    if (role === 'leader') {
+      leaderBridgeId = bridgeId;
+      if (followerBridgeId === bridgeId) followerBridgeId = null;
+    } else {
+      followerBridgeId = bridgeId;
+      if (leaderBridgeId === bridgeId) leaderBridgeId = null;
+    }
+    syncRoles();
+    initialResetSent = false;
+    renderView();
   }
 
   function createInstanceNode(instance) {
     const card = document.createElement('div');
     card.className = 'instance-card';
     card.dataset.bridgeId = instance.bridge_id;
-
     card.innerHTML = `
       <span class="instance-card-header">
         <strong class="instance-card-label"></strong>
         <span class="instance-card-status"></span>
       </span>
       <span class="instance-card-meta instance-card-aircraft"></span>
-      <span class="instance-card-meta instance-card-mode"></span>
       <span class="instance-card-meta instance-card-flight"></span>
       <div class="instance-card-actions">
-        <button type="button" class="instance-select-button">Select</button>
+        <button type="button" class="leader-button">Leader</button>
+        <button type="button" class="follower-button secondary">Follower</button>
       </div>
     `;
-
-    card
-      .querySelector('.instance-select-button')
-      .addEventListener('click', () => {
-        selectedBridgeId = instance.bridge_id;
-        setMessage(`Selected ${instance.label || instance.bridge_id}.`);
-        renderView();
-      });
-
+    card.querySelector('.leader-button').addEventListener('click', () => {
+      setRole(instance.bridge_id, 'leader');
+      setMessage(`Assigned ${instance.label || instance.bridge_id} as leader.`);
+    });
+    card.querySelector('.follower-button').addEventListener('click', () => {
+      setRole(instance.bridge_id, 'follower');
+      setMessage(`Assigned ${instance.label || instance.bridge_id} as follower.`);
+    });
     instanceNodes.set(instance.bridge_id, card);
     return card;
   }
 
   function patchInstanceNode(instance) {
     let card = instanceNodes.get(instance.bridge_id);
-    if (!card) {
-      card = createInstanceNode(instance);
-    }
+    if (!card) card = createInstanceNode(instance);
 
     const telemetry = instance.telemetry || {};
-    const autopilot = telemetry.autopilot || {};
-    const isSelected = instance.bridge_id === selectedBridgeId;
-    const button = card.querySelector('.instance-select-button');
+    const isLeader = instance.bridge_id === leaderBridgeId;
+    const isFollower = instance.bridge_id === followerBridgeId;
     const status = card.querySelector('.instance-card-status');
+    const leaderButton = card.querySelector('.leader-button');
+    const followerButton = card.querySelector('.follower-button');
 
-    card.classList.toggle('selected', isSelected);
+    card.classList.toggle('leader', isLeader);
+    card.classList.toggle('follower', isFollower);
     card.querySelector('.instance-card-label').textContent =
       instance.label || instance.bridge_id;
     status.textContent = instance.connected ? 'Connected' : 'Disconnected';
     status.className = `instance-card-status ${instance.connected ? 'ok' : 'bad'}`;
     card.querySelector('.instance-card-aircraft').textContent =
       telemetry.aircraft || instance.hello?.aircraft || '-';
-    card.querySelector('.instance-card-mode').textContent = `Mode: ${
-      autopilot.mode || '-'
-    }`;
     card.querySelector('.instance-card-flight').textContent = `Alt: ${formatNumber(
       telemetry.altitude_ft,
       'ft'
     )} | Hdg: ${formatNumber(telemetry.heading_deg, 'deg')}`;
-    button.textContent = isSelected ? 'Selected' : 'Select';
-    button.classList.toggle('secondary', isSelected);
+    leaderButton.textContent = isLeader ? 'Leader' : 'Make leader';
+    followerButton.textContent = isFollower ? 'Follower' : 'Make follower';
+    leaderButton.classList.toggle('secondary', !isLeader);
+    followerButton.classList.toggle('secondary', !isFollower);
 
     return card;
   }
 
   function renderInstances() {
     const nextIds = new Set(instances.map((instance) => instance.bridge_id));
-
     for (const [bridgeId, node] of instanceNodes.entries()) {
       if (!nextIds.has(bridgeId)) {
         node.remove();
@@ -169,84 +241,179 @@
     }
 
     const emptyState = instanceListEl.querySelector('.empty-state');
-    if (emptyState) {
-      instanceListEl.innerHTML = '';
-    }
+    if (emptyState) instanceListEl.innerHTML = '';
 
     instances.forEach((instance) => {
       const node = patchInstanceNode(instance);
-      if (node.parentNode !== instanceListEl) {
-        instanceListEl.appendChild(node);
-      }
+      if (node.parentNode !== instanceListEl) instanceListEl.appendChild(node);
     });
+  }
+
+  function telemetryLine(instance) {
+    const telemetry = instance?.telemetry || {};
+    return [
+      instance?.label || '-',
+      formatNumber(telemetry.altitude_ft, 'ft'),
+      formatNumber(telemetry.heading_deg, 'deg'),
+      formatNumber(telemetry.speed_kts, 'kt'),
+      hasPosition(telemetry)
+        ? `${Number(telemetry.lat_deg).toFixed(5)}, ${Number(telemetry.lon_deg).toFixed(5)}`
+        : 'position -',
+    ].join(' | ');
   }
 
   function renderView() {
-    syncSelection();
+    syncRoles();
     renderInstances();
 
-    const selected = getSelectedInstance();
-    setConnected(Boolean(selected && selected.connected));
-    setControlsEnabled(Boolean(selected && selected.connected));
+    const connectedCount = connectedInstances().length;
+    const leader = instanceById(leaderBridgeId);
+    const follower = instanceById(followerBridgeId);
+    const spacing = distanceNm(leader?.telemetry, follower?.telemetry);
+    const ready = Boolean(leader?.connected && follower?.connected);
 
-    if (!selected) {
-      resetDetails();
-      return;
+    setBridgeStatus(connectedCount);
+    leaderLabelEl.textContent = leader?.label || 'Waiting for leader';
+    followerLabelEl.textContent = follower?.label || 'Waiting for follower';
+    formationStatusEl.textContent = ready
+      ? controlEnabled
+        ? 'Following active'
+        : 'Following paused'
+      : 'Waiting for two connected GeoFS windows';
+    formationStatusEl.className = ready ? 'ok' : 'bad';
+    spacingReadoutEl.textContent = spacing == null ? '-' : formatNumber(spacing, 'nm', 2);
+    leaderTelemetryEl.textContent = telemetryLine(leader);
+    followerTelemetryEl.textContent = telemetryLine(follower);
+    resetFormationButton.disabled = !ready;
+    followToggleButton.disabled = !ready;
+    followToggleButton.textContent = controlEnabled ? 'Pause following' : 'Resume following';
+
+    if (ready && !initialResetSent) {
+      initialResetSent = true;
+      resetFormation();
     }
-
-    renderTelemetry(selected.telemetry, selected.label);
   }
 
-  function sendCommand(command, value) {
-    if (!uiSocket || uiSocket.readyState !== WebSocket.OPEN) {
-      setMessage('UI socket is not connected.');
+  function sendCommand(bridgeId, command, fields = {}) {
+    if (!uiSocket || uiSocket.readyState !== WebSocket.OPEN || !bridgeId) return;
+    uiSocket.send(
+      JSON.stringify({
+        type: 'autopilot_command',
+        bridge_id: bridgeId,
+        command,
+        ...fields,
+      })
+    );
+  }
+
+  function resetFormation() {
+    const leader = instanceById(leaderBridgeId);
+    const follower = instanceById(followerBridgeId);
+    if (!leader?.connected || !follower?.connected) {
+      setMessage('Connect two GeoFS windows before resetting the formation.');
       return;
     }
 
-    if (!selectedBridgeId) {
-      setMessage('Select a GeoFS window first.');
-      return;
-    }
+    const leaderPose = { ...CONFIG.startPose };
+    const followerPosition = offsetPositionByNm(
+      leaderPose,
+      leaderPose.heading_deg + 180,
+      CONFIG.desiredSpacingNm
+    );
+    const followerPose = { ...leaderPose, ...followerPosition };
 
-    const payload = {
-      type: 'autopilot_command',
-      bridge_id: selectedBridgeId,
-      command,
+    sendCommand(leader.bridge_id, 'reset_pose', { pose: leaderPose });
+    sendCommand(follower.bridge_id, 'reset_pose', { pose: followerPose });
+    lastCommandSentAt = 0;
+    setMessage('Reset sent: leader placed ahead, follower placed behind at the start pose.');
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function wakeFromLeaderToFollower(_leaderTelemetry, _followerTelemetry) {
+    return null;
+  }
+
+  function injectWakeIntoFollowerCommand(followerCommand, _wakeModel) {
+    return followerCommand;
+  }
+
+  function buildFollowerCommand(leaderTelemetry, followerTelemetry) {
+    if (!hasPosition(leaderTelemetry) || !hasPosition(followerTelemetry)) return null;
+
+    const leaderHeading = normalizeHeading(leaderTelemetry.heading_deg || CONFIG.startPose.heading_deg);
+    const targetPosition = offsetPositionByNm(
+      leaderTelemetry,
+      leaderHeading + 180,
+      CONFIG.desiredSpacingNm
+    );
+    const spacing = distanceNm(leaderTelemetry, followerTelemetry);
+    const rangeToTarget = distanceNm(followerTelemetry, targetPosition) || 0;
+    const headingToTarget = bearingDeg(followerTelemetry, targetPosition);
+    if (headingToTarget == null) return null;
+
+    const closure = clamp(
+      rangeToTarget * CONFIG.gains.closureKtsPerNm,
+      0,
+      CONFIG.gains.maxClosureKts
+    );
+    const leaderSpeed = Number(leaderTelemetry.speed_kts) || CONFIG.startPose.speed_kts;
+    const speed = spacing != null && spacing < CONFIG.desiredSpacingNm * 0.5
+      ? Math.max(90, leaderSpeed - CONFIG.gains.maxClosureKts)
+      : leaderSpeed + closure;
+
+    return {
+      heading_deg: normalizeHeading(headingToTarget),
+      altitude_ft: Number(leaderTelemetry.altitude_ft) || CONFIG.startPose.altitude_ft,
+      speed_kts: speed,
+      target_spacing_nm: CONFIG.desiredSpacingNm,
+      current_spacing_nm: spacing,
+      heading_error_deg: shortestHeadingDelta(followerTelemetry.heading_deg || 0, headingToTarget),
     };
-    if (value != null) payload.value = value;
-    uiSocket.send(JSON.stringify(payload));
   }
 
-  function attachButtons() {
-    commandButtons.forEach((button) => {
-      button.addEventListener('click', () => {
-        const command = button.dataset.command;
-        const inputId = button.dataset.input;
+  function controlFormation() {
+    if (!controlEnabled) return;
+    const now = Date.now();
+    if (now - lastCommandSentAt < CONFIG.commandIntervalMs) return;
 
-        if (!inputId) {
-          sendCommand(command);
-          return;
-        }
+    const leader = instanceById(leaderBridgeId);
+    const follower = instanceById(followerBridgeId);
+    const leaderTelemetry = leader?.telemetry;
+    const followerTelemetry = follower?.telemetry;
+    if (!leader?.connected || !follower?.connected || !leaderTelemetry || !followerTelemetry) {
+      return;
+    }
 
-        const input = document.getElementById(inputId);
-        const value = Number(input.value);
+    sendCommand(leader.bridge_id, 'set_heading', { value: CONFIG.startPose.heading_deg });
+    sendCommand(leader.bridge_id, 'set_altitude', { value: CONFIG.startPose.altitude_ft });
+    sendCommand(leader.bridge_id, 'set_speed', { value: CONFIG.startPose.speed_kts });
 
-        if (!Number.isFinite(value)) {
-          setMessage(`Enter a valid value for ${command}.`);
-          input.focus();
-          return;
-        }
+    const wake = wakeFromLeaderToFollower(leaderTelemetry, followerTelemetry);
+    const followerCommand = injectWakeIntoFollowerCommand(
+      buildFollowerCommand(leaderTelemetry, followerTelemetry),
+      wake
+    );
+    if (!followerCommand) return;
 
-        sendCommand(command, value);
-      });
-    });
+    sendCommand(follower.bridge_id, 'set_heading', { value: followerCommand.heading_deg });
+    sendCommand(follower.bridge_id, 'set_altitude', { value: followerCommand.altitude_ft });
+    sendCommand(follower.bridge_id, 'set_speed', { value: followerCommand.speed_kts });
+    lastCommandSentAt = now;
+  }
+
+  function startControlLoop() {
+    if (controlTimer) window.clearInterval(controlTimer);
+    controlTimer = window.setInterval(controlFormation, 1000 / CONFIG.controlHz);
   }
 
   function connectUiSocket() {
     uiSocket = new WebSocket(`ws://${window.location.host}/ui`);
 
     uiSocket.addEventListener('open', () => {
-      setMessage('UI connected. Waiting for GeoFS bridge telemetry.');
+      setMessage('UI connected. Waiting for two GeoFS bridge telemetry streams.');
     });
 
     uiSocket.addEventListener('message', (event) => {
@@ -269,33 +436,24 @@
           const index = instances.findIndex(
             (instance) => instance.bridge_id === next.bridge_id
           );
-          if (index >= 0) {
-            instances[index] = next;
-          } else {
-            instances.push(next);
-          }
+          if (index >= 0) instances[index] = next;
+          else instances.push(next);
           renderView();
         }
         return;
       }
 
-      if (message.type === 'command_result') {
-        setMessage(
-          message.ok
-            ? `Sent ${message.command} to ${message.bridge_id}${
-                message.value != null ? ` = ${message.value}` : ''
-              }.`
-            : message.error || 'Command failed.'
-        );
+      if (message.type === 'command_result' && !message.ok) {
+        setMessage(message.error || 'Command failed.');
       }
     });
 
     uiSocket.addEventListener('close', () => {
       instances = [];
-      selectedBridgeId = null;
-      for (const node of instanceNodes.values()) {
-        node.remove();
-      }
+      leaderBridgeId = null;
+      followerBridgeId = null;
+      initialResetSent = false;
+      for (const node of instanceNodes.values()) node.remove();
       instanceNodes.clear();
       renderView();
       setMessage('UI socket disconnected. Retrying...');
@@ -303,7 +461,16 @@
     });
   }
 
-  attachButtons();
-  setControlsEnabled(false);
+  resetFormationButton.addEventListener('click', () => {
+    initialResetSent = true;
+    resetFormation();
+  });
+
+  followToggleButton.addEventListener('click', () => {
+    controlEnabled = !controlEnabled;
+    renderView();
+  });
+
   connectUiSocket();
+  startControlLoop();
 })();
