@@ -222,16 +222,11 @@
       <span class="instance-card-meta instance-card-flight"></span>
       <div class="instance-card-actions">
         <button type="button" class="leader-button">Leader</button>
-        <button type="button" class="follower-button secondary">Follower</button>
       </div>
     `;
     card.querySelector('.leader-button').addEventListener('click', () => {
       setRole(instance.bridge_id, 'leader');
       setMessage(`Assigned ${instance.label || instance.bridge_id} as leader.`);
-    });
-    card.querySelector('.follower-button').addEventListener('click', () => {
-      setRole(instance.bridge_id, 'follower');
-      setMessage(`Assigned ${instance.label || instance.bridge_id} as follower.`);
     });
     instanceNodes.set(instance.bridge_id, card);
     return card;
@@ -246,7 +241,6 @@
     const isFollower = instance.bridge_id === followerBridgeId;
     const status = card.querySelector('.instance-card-status');
     const leaderButton = card.querySelector('.leader-button');
-    const followerButton = card.querySelector('.follower-button');
 
     card.classList.toggle('leader', isLeader);
     card.classList.toggle('follower', isFollower);
@@ -261,9 +255,7 @@
       'ft'
     )} | Hdg: ${formatNumber(telemetry.heading_deg, 'deg')}`;
     leaderButton.textContent = isLeader ? 'Leader' : 'Make leader';
-    followerButton.textContent = isFollower ? 'Follower' : 'Make follower';
     leaderButton.classList.toggle('secondary', !isLeader);
-    followerButton.classList.toggle('secondary', !isFollower);
 
     return card;
   }
