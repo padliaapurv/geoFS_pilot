@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check public/app.js && node --check js/geofs_bridge.user.js"
+    "check": "node --check server.js && node --check public/lib/telemetry.js && node --check public/lib/geo.js && node --check public/lib/formation.js && node --check public/app.js && node --check js/geofs_bridge.user.js"
   },
   "dependencies": {
     "ws": "^8.18.3"

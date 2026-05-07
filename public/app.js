@@ -28,6 +28,14 @@
     },
   };
 
+  const { telemetryFor } = window.GeoFsTelemetry;
+  const { distanceNm, hasPosition } = window.GeoFsGeo;
+  const {
+    wakeFromLeaderToFollower,
+    injectWakeIntoFollowerCommand,
+    buildFollowerCommand,
+  } = window.GeoFsFormation;
+
   let uiSocket = null;
   let instances = [];
   let leaderBridgeId = null;
@@ -54,122 +62,6 @@
     const number = Number(value);
     if (!Number.isFinite(number)) return '-';
     return `${number.toFixed(digits)} ${suffix}`;
-  }
-
-
-  function finiteNumber(...values) {
-    for (const value of values) {
-      const number = Number(value);
-      if (Number.isFinite(number)) return number;
-    }
-    return null;
-  }
-
-  function telemetryFor(instance) {
-    const telemetry = instance?.telemetry || null;
-    if (!telemetry) return {};
-    const lla = Array.isArray(telemetry.lla) ? telemetry.lla : [];
-    const htr = Array.isArray(telemetry.htr) ? telemetry.htr : [];
-    const altitudeMeters = finiteNumber(telemetry.altitudeMeters, lla[2]);
-    const speedKts = finiteNumber(
-      telemetry.speed_kts,
-      telemetry.ktas,
-      telemetry.kias,
-      telemetry.groundSpeedKnt,
-      telemetry.groundSpeedMS != null ? Number(telemetry.groundSpeedMS) * 1.94384 : null,
-      telemetry.speedMS != null ? Number(telemetry.speedMS) * 1.94384 : null
-    );
-
-    return {
-      raw: telemetry,
-      aircraft: telemetry.aircraft || instance?.hello?.aircraft || instance?.label || '-',
-      lat_deg: finiteNumber(telemetry.lat_deg, lla[0]),
-      lon_deg: finiteNumber(telemetry.lon_deg, lla[1]),
-      altitude_ft: finiteNumber(
-        telemetry.altitude_ft,
-        telemetry.altitudeFeet,
-        altitudeMeters != null ? altitudeMeters * 3.28084 : null
-      ),
-      heading_deg: finiteNumber(telemetry.heading_deg, telemetry.headingDeg, htr[0]),
-      pitch_deg: finiteNumber(telemetry.pitch_deg, telemetry.tiltDeg, htr[1]),
-      roll_deg: finiteNumber(telemetry.roll_deg, telemetry.rollDeg, htr[2]),
-      speed_kts: speedKts,
-      throttle: finiteNumber(telemetry.throttle),
-      time: finiteNumber(telemetry.time),
-    };
-  }
-
-  function normalizeHeading(degrees) {
-    return ((Number(degrees) % 360) + 360) % 360;
-  }
-
-  function shortestHeadingDelta(fromDeg, toDeg) {
-    return ((normalizeHeading(toDeg) - normalizeHeading(fromDeg) + 540) % 360) - 180;
-  }
-
-  function degToRad(degrees) {
-    return (Number(degrees) * Math.PI) / 180;
-  }
-
-  function radToDeg(radians) {
-    return (Number(radians) * 180) / Math.PI;
-  }
-
-  function offsetPositionByNm(origin, bearingDeg, distanceNm) {
-    const radiusNm = 3440.065;
-    const lat1 = degToRad(origin.lat_deg);
-    const lon1 = degToRad(origin.lon_deg);
-    const bearing = degToRad(bearingDeg);
-    const angularDistance = distanceNm / radiusNm;
-
-    const lat2 = Math.asin(
-      Math.sin(lat1) * Math.cos(angularDistance) +
-        Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearing)
-    );
-    const lon2 =
-      lon1 +
-      Math.atan2(
-        Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(lat1),
-        Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2)
-      );
-
-    return {
-      lat_deg: radToDeg(lat2),
-      lon_deg: ((radToDeg(lon2) + 540) % 360) - 180,
-    };
-  }
-
-  function distanceNm(a, b) {
-    if (!hasPosition(a) || !hasPosition(b)) return null;
-    const radiusNm = 3440.065;
-    const lat1 = degToRad(a.lat_deg);
-    const lat2 = degToRad(b.lat_deg);
-    const dLat = degToRad(b.lat_deg - a.lat_deg);
-    const dLon = degToRad(b.lon_deg - a.lon_deg);
-    const h =
-      Math.sin(dLat / 2) ** 2 +
-      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
-    return 2 * radiusNm * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
-  }
-
-  function bearingDeg(a, b) {
-    if (!hasPosition(a) || !hasPosition(b)) return null;
-    const lat1 = degToRad(a.lat_deg);
-    const lat2 = degToRad(b.lat_deg);
-    const dLon = degToRad(b.lon_deg - a.lon_deg);
-    const y = Math.sin(dLon) * Math.cos(lat2);
-    const x =
-      Math.cos(lat1) * Math.sin(lat2) -
-      Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
-    return normalizeHeading(radToDeg(Math.atan2(y, x)));
-  }
-
-  function hasPosition(telemetry) {
-    return (
-      telemetry &&
-      Number.isFinite(Number(telemetry.lat_deg)) &&
-      Number.isFinite(Number(telemetry.lon_deg))
-    );
   }
 
   function connectedInstances() {
@@ -352,65 +244,6 @@
     setMessage('Follower controls primed from the synced Tampermonkey geoBridge API. Hand-fly the leader; the follower will track behind it.');
   }
 
-  function clamp(value, min, max) {
-    return Math.min(max, Math.max(min, value));
-  }
-
-  function wakeFromLeaderToFollower(_leaderTelemetry, _followerTelemetry) {
-    return null;
-  }
-
-  function injectWakeIntoFollowerCommand(followerCommand, _wakeModel) {
-    return followerCommand;
-  }
-
-  function buildFollowerCommand(leaderTelemetry, followerTelemetry) {
-    if (!hasPosition(leaderTelemetry) || !hasPosition(followerTelemetry)) return null;
-
-    const leaderHeading = normalizeHeading(
-      leaderTelemetry.heading_deg || CONFIG.startPose.heading_deg
-    );
-    const targetPosition = offsetPositionByNm(
-      leaderTelemetry,
-      leaderHeading + 180,
-      CONFIG.desiredSpacingNm
-    );
-    const spacing = distanceNm(leaderTelemetry, followerTelemetry);
-    const rangeToTarget = distanceNm(followerTelemetry, targetPosition) || 0;
-    const headingToTarget = bearingDeg(followerTelemetry, targetPosition);
-    if (headingToTarget == null) return null;
-
-    const closure = clamp(
-      rangeToTarget * CONFIG.gains.closureKtsPerNm,
-      0,
-      CONFIG.gains.maxClosureKts
-    );
-    const leaderSpeed = Number(leaderTelemetry.speed_kts) || CONFIG.startPose.speed_kts;
-    const targetSpeed =
-      spacing != null && spacing < CONFIG.desiredSpacingNm * 0.5
-        ? Math.max(90, leaderSpeed - CONFIG.gains.maxClosureKts)
-        : leaderSpeed + closure;
-    const headingError = shortestHeadingDelta(followerTelemetry.heading_deg || 0, headingToTarget);
-    const altitudeError =
-      (Number(leaderTelemetry.altitude_ft) || CONFIG.startPose.altitude_ft) -
-      (Number(followerTelemetry.altitude_ft) || CONFIG.startPose.altitude_ft);
-    const speedError = targetSpeed - (Number(followerTelemetry.speed_kts) || targetSpeed);
-    const throttleBase =
-      Number.isFinite(Number(followerTelemetry.throttle)) ? Number(followerTelemetry.throttle) : 0.65;
-
-    return {
-      controls: {
-        roll: clamp(headingError / 35, -0.8, 0.8),
-        pitch: clamp(altitudeError / 1500, -0.4, 0.4),
-        yaw: 0,
-        throttle: clamp(throttleBase + speedError / 120, 0, 1),
-      },
-      target_spacing_nm: CONFIG.desiredSpacingNm,
-      current_spacing_nm: spacing,
-      heading_error_deg: headingError,
-    };
-  }
-
   function controlFormation() {
     if (!controlEnabled) return;
     const now = Date.now();
@@ -427,7 +260,7 @@
 
     const wake = wakeFromLeaderToFollower(leaderTelemetry, followerTelemetry);
     const followerCommand = injectWakeIntoFollowerCommand(
-      buildFollowerCommand(leaderTelemetry, followerTelemetry),
+      buildFollowerCommand(CONFIG, leaderTelemetry, followerTelemetry),
       wake
     );
     if (!followerCommand) return;
