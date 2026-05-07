@@ -42,7 +42,6 @@
   }
 
   window.GeoFsTelemetry = {
-    finiteNumber,
     telemetryFor,
   };
 })();

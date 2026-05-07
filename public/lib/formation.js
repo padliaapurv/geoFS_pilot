@@ -70,7 +70,6 @@
   }
 
   window.GeoFsFormation = {
-    clamp,
     wakeFromLeaderToFollower,
     injectWakeIntoFollowerCommand,
     buildFollowerCommand,

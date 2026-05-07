@@ -75,8 +75,6 @@
   window.GeoFsGeo = {
     normalizeHeading,
     shortestHeadingDelta,
-    degToRad,
-    radToDeg,
     hasPosition,
     offsetPositionByNm,
     distanceNm,
