@@ -8,7 +8,6 @@
   const leaderTelemetryEl = document.getElementById('leader-telemetry');
   const followerTelemetryEl = document.getElementById('follower-telemetry');
   const messageLogEl = document.getElementById('message-log');
-  const resetFormationButton = document.getElementById('reset-formation');
   const followToggleButton = document.getElementById('follow-toggle');
 
   const CONFIG = {
@@ -319,7 +318,6 @@
     spacingReadoutEl.textContent = spacing == null ? '-' : formatNumber(spacing, 'nm', 2);
     leaderTelemetryEl.textContent = telemetryLine(leader);
     followerTelemetryEl.textContent = telemetryLine(follower);
-    resetFormationButton.disabled = !ready;
     followToggleButton.disabled = !ready;
     followToggleButton.textContent = controlEnabled ? 'Pause following' : 'Resume following';
 
@@ -494,11 +492,6 @@
       window.setTimeout(connectUiSocket, 1000);
     });
   }
-
-  resetFormationButton.addEventListener('click', () => {
-    initialResetSent = true;
-    resetFormation();
-  });
 
   followToggleButton.addEventListener('click', () => {
     controlEnabled = !controlEnabled;
