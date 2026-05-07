@@ -5,6 +5,8 @@
   --muted: #666666;
   --line: #dcdcdc;
   --accent: #222222;
+  --leader: #174ea6;
+  --follower: #7a4f00;
   --ok: #0a7a33;
   --bad: #b42318;
 }
@@ -21,19 +23,30 @@ body {
 }
 
 .wrap {
-  width: min(720px, calc(100vw - 24px));
+  width: min(840px, calc(100vw - 24px));
   margin: 0 auto;
   padding: 24px 0 40px;
 }
 
 h1 {
-  margin: 0 0 16px;
+  margin: 0 0 8px;
   font-size: 28px;
 }
 
 h2 {
   margin: 0 0 12px;
   font-size: 18px;
+}
+
+h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.lede {
+  margin: 0 0 16px;
+  color: var(--muted);
+  line-height: 1.4;
 }
 
 .card {
@@ -52,7 +65,7 @@ h2 {
   border-bottom: 1px solid var(--line);
 }
 
-.row:last-child {
+.row:last-of-type {
   border-bottom: 0;
 }
 
@@ -71,9 +84,14 @@ h2 {
   border-radius: 6px;
 }
 
-.instance-card.selected {
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+.instance-card.leader {
+  border-color: var(--leader);
+  box-shadow: inset 0 0 0 1px var(--leader);
+}
+
+.instance-card.follower {
+  border-color: var(--follower);
+  box-shadow: inset 0 0 0 1px var(--follower);
 }
 
 .instance-card-header {
@@ -90,11 +108,23 @@ h2 {
 }
 
 .instance-card-actions {
+  display: flex;
+  gap: 8px;
   margin-top: 10px;
 }
 
-.instance-select-button {
-  min-width: 96px;
+.telemetry-block {
+  margin-top: 14px;
+  padding: 12px;
+  background: #fafafa;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.telemetry-block p {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .empty-state {
@@ -102,33 +132,16 @@ h2 {
   color: var(--muted);
 }
 
-.controls label {
-  display: block;
-  margin-bottom: 12px;
-  color: var(--muted);
-}
-
-.field,
 .buttons {
   display: flex;
   gap: 8px;
-  margin-top: 6px;
+  margin-top: 14px;
 }
 
-input,
 button {
   border: 1px solid var(--line);
   font: inherit;
   border-radius: 6px;
-}
-
-input {
-  width: 100%;
-  padding: 10px 12px;
-  background: #fff;
-}
-
-button {
   padding: 10px 12px;
   background: var(--accent);
   color: white;
@@ -159,8 +172,9 @@ button:disabled {
 }
 
 @media (max-width: 720px) {
-  .field,
-  .buttons {
+  .row,
+  .buttons,
+  .instance-card-actions {
     flex-direction: column;
   }
 }

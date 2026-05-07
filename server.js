@@ -243,5 +243,5 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`GeoFS autopilot app running at http://${HOST}:${PORT}`);
+  console.log(`GeoFS formation pilot app running at http://${HOST}:${PORT}`);
 });
