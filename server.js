@@ -158,6 +158,13 @@ bridgeWss.on('connection', (ws) => {
         });
         break;
 
+      case 'command_result':
+        broadcastUi({
+          ...message,
+          bridge_id: bridge.bridgeId,
+        });
+        break;
+
       case 'pong':
         break;
 

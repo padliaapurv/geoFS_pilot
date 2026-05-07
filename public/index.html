@@ -9,7 +9,7 @@
   <body>
     <main class="wrap">
       <h1>GeoFS formation pilot</h1>
-      <p class="lede">Connect two GeoFS windows. The app reads both telemetry streams, keeps one aircraft as the leader, and commands the second aircraft to follow behind it.</p>
+      <p class="lede">Connect two GeoFS windows. The app reads both telemetry streams, keeps one aircraft as the leader, and sends supported geoBridge control commands to the second aircraft so it follows behind the leader.</p>
 
       <section class="card">
         <h2>Connected aircraft</h2>
@@ -34,7 +34,7 @@
           <p id="follower-telemetry">-</p>
         </div>
         <div class="buttons">
-          <button id="reset-formation" type="button" disabled>Reset formation</button>
+          <button id="reset-formation" type="button" disabled>Prime follower controls</button>
           <button id="follow-toggle" type="button" class="secondary" disabled>Pause following</button>
         </div>
       </section>
