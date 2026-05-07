@@ -69,6 +69,23 @@ function getBridgeState(bridgeId) {
   return bridge;
 }
 
+function allocateBridgeId(requestedBridgeId, ws) {
+  if (ws.bridgeId) return ws.bridgeId;
+
+  let bridgeId = requestedBridgeId;
+  let bridge = state.bridges.get(bridgeId);
+  let suffix = 2;
+
+  while (bridge && bridge.ws && bridge.ws.readyState === bridge.ws.OPEN && bridge.ws !== ws) {
+    bridgeId = `${requestedBridgeId}:${suffix}`;
+    bridge = state.bridges.get(bridgeId);
+    suffix += 1;
+  }
+
+  ws.bridgeId = bridgeId;
+  return bridgeId;
+}
+
 function serveFile(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const requestPath = url.pathname === '/' ? '/index.html' : url.pathname;
@@ -124,26 +141,31 @@ bridgeWss.on('connection', (ws) => {
       return;
     }
 
-    const bridgeId = message.bridge_id;
-    if (!bridgeId) return;
+    const requestedBridgeId = message.bridge_id;
+    if (!requestedBridgeId) return;
 
+    const bridgeId = allocateBridgeId(requestedBridgeId, ws);
+    const normalizedMessage =
+      bridgeId === requestedBridgeId
+        ? message
+        : { ...message, bridge_id: bridgeId, source_bridge_id: requestedBridgeId };
     const bridge = getBridgeState(bridgeId);
     bridge.lastSeenAt = Date.now();
-    bridge.label = message.label || bridge.label;
+    bridge.label = normalizedMessage.label || bridge.label;
     bridge.ws = ws;
     activeBridgeId = bridgeId;
 
     switch (message.type) {
       case 'hello':
-        bridge.hello = message;
-        bridge.label = message.label || bridge.label;
+        bridge.hello = normalizedMessage;
+        bridge.label = normalizedMessage.label || bridge.label;
         sendJson(ws, { type: 'ack', version: '3.0.0' });
         broadcastUi(currentSnapshot());
         break;
 
       case 'telemetry':
-        bridge.telemetry = message;
-        bridge.label = message.label || bridge.label;
+        bridge.telemetry = normalizedMessage;
+        bridge.label = normalizedMessage.label || bridge.label;
         broadcastUi({
           type: 'telemetry',
           bridge_id: bridge.bridgeId,
@@ -160,7 +182,7 @@ bridgeWss.on('connection', (ws) => {
 
       case 'command_result':
         broadcastUi({
-          ...message,
+          ...normalizedMessage,
           bridge_id: bridge.bridgeId,
         });
         break;

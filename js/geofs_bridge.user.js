@@ -209,30 +209,27 @@
   }
 
 
+  function generateBridgeId() {
+    const random =
+      window.crypto?.randomUUID?.() ||
+      `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    return `geofs-${random}`;
+  }
+
   function getBridgeId() {
-    if (state.bridgeId) return state.bridgeId;
-    const key = 'geoBridge.bridgeId';
-    let bridgeId = window.localStorage?.getItem(key);
-    if (!bridgeId) {
-      const random =
-        window.crypto?.randomUUID?.() ||
-        `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-      bridgeId = `geofs-${random}`;
-      window.localStorage?.setItem(key, bridgeId);
-    }
-    state.bridgeId = bridgeId;
-    return bridgeId;
+    if (!state.bridgeId) state.bridgeId = generateBridgeId();
+    return state.bridgeId;
   }
 
   function aircraftLabel() {
     const aircraft = window.geofs?.aircraft?.instance;
-    return (
+    const name =
       aircraft?.definition?.name ||
       aircraft?.aircraftRecord?.name ||
       aircraft?.id ||
       document.title ||
-      'GeoFS aircraft'
-    );
+      'GeoFS aircraft';
+    return `${name} ${getBridgeId().slice(-4)}`;
   }
 
   function sendBridgeMessage(payload) {
