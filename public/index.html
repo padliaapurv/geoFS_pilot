@@ -35,15 +35,21 @@
         </div>
         <div class="buttons">
           <button id="follow-toggle" type="button" class="secondary" disabled>Pause following</button>
+          <button id="reset-formation" type="button" disabled>Reset</button>
         </div>
       </section>
 
       <p id="message-log">Waiting for bridge.</p>
     </main>
 
-    <script src="/lib/telemetry.js"></script>
-    <script src="/lib/geo.js"></script>
-    <script src="/lib/formation.js"></script>
+    <script src="/lib/math_utilities/numbers.js"></script>
+    <script src="/lib/math_utilities/units.js"></script>
+    <script src="/lib/math_utilities/angles.js"></script>
+    <script src="/lib/math_utilities/geodesy.js"></script>
+    <script src="/lib/telemetry/normalize.js"></script>
+    <script src="/lib/commands/factories.js"></script>
+    <script src="/lib/formation/reset.js"></script>
+    <script src="/lib/formation/follower.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

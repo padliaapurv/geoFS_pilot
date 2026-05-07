@@ -9,32 +9,30 @@
   const followerTelemetryEl = document.getElementById('follower-telemetry');
   const messageLogEl = document.getElementById('message-log');
   const followToggleButton = document.getElementById('follow-toggle');
+  const resetButton = document.getElementById('reset-formation');
 
   const CONFIG = {
     controlHz: 4,
     commandIntervalMs: 250,
     requiredAircraft: 2,
-    desiredSpacingNm: 0.75,
     startPose: {
-      lat_deg: 37.618999,
-      lon_deg: -122.375,
-      altitude_ft: 3500,
-      heading_deg: 270,
-      speed_kts: 150,
+      lat_rad: window.GeoFsUnits.degreesToRadians(37.618999),
+      lon_rad: window.GeoFsUnits.degreesToRadians(-122.375),
+      altitude_m: window.GeoFsUnits.feetToMeters(3500),
+      heading_rad: window.GeoFsUnits.degreesToRadians(270),
+      speed_mps: window.GeoFsUnits.knotsToMetersPerSecond(150),
     },
-    gains: {
-      closureKtsPerNm: 35,
-      maxClosureKts: 35,
+    resetOffset: {
+      behind_m: 1000,
+      right_m: 100,
+      above_m: 100,
     },
   };
 
   const { telemetryFor } = window.GeoFsTelemetry;
-  const { distanceNm, hasPosition } = window.GeoFsGeo;
-  const {
-    wakeFromLeaderToFollower,
-    injectWakeIntoFollowerCommand,
-    buildFollowerCommand,
-  } = window.GeoFsFormation;
+  const { distanceMeters, hasPosition } = window.GeoFsGeodesy;
+  const { buildFollowerCommands, buildResetCommands } = window.GeoFsFormation;
+  const Commands = window.GeoFsCommands;
 
   let uiSocket = null;
   let instances = [];
@@ -62,6 +60,13 @@
     const number = Number(value);
     if (!Number.isFinite(number)) return '-';
     return `${number.toFixed(digits)} ${suffix}`;
+  }
+
+  function formatPosition(telemetry) {
+    if (!hasPosition(telemetry)) return 'position -';
+    return `${Number(telemetry.lat_rad).toFixed(6)} rad, ${Number(
+      telemetry.lon_rad
+    ).toFixed(6)} rad`;
   }
 
   function connectedInstances() {
@@ -142,9 +147,9 @@
     card.querySelector('.instance-card-aircraft').textContent =
       telemetry.aircraft || instance.hello?.aircraft || '-';
     card.querySelector('.instance-card-flight').textContent = `Alt: ${formatNumber(
-      telemetry.altitude_ft,
-      'ft'
-    )} | Hdg: ${formatNumber(telemetry.heading_deg, 'deg')}`;
+      telemetry.altitude_m,
+      'm'
+    )} | Hdg: ${formatNumber(telemetry.heading_rad, 'rad', 3)}`;
     leaderButton.textContent = isLeader ? 'Leader' : 'Make leader';
     leaderButton.classList.toggle('secondary', !isLeader);
 
@@ -179,13 +184,59 @@
     const telemetry = telemetryFor(instance);
     return [
       instance?.label || '-',
-      formatNumber(telemetry.altitude_ft, 'ft'),
-      formatNumber(telemetry.heading_deg, 'deg'),
-      formatNumber(telemetry.speed_kts, 'kt'),
-      hasPosition(telemetry)
-        ? `${Number(telemetry.lat_deg).toFixed(5)}, ${Number(telemetry.lon_deg).toFixed(5)}`
-        : 'position -',
+      formatNumber(telemetry.altitude_m, 'm'),
+      formatNumber(telemetry.heading_rad, 'rad', 3),
+      formatNumber(telemetry.speed_mps, 'm/s', 1),
+      formatPosition(telemetry),
     ].join(' | ');
+  }
+
+  function algorithmTelemetryFor(instance) {
+    const { raw: _raw, ...telemetry } = telemetryFor(instance);
+    return telemetry;
+  }
+
+  function sendCommand(bridgeId, commandOrCommands) {
+    const commands = Array.isArray(commandOrCommands)
+      ? commandOrCommands
+      : [commandOrCommands];
+    if (!uiSocket || uiSocket.readyState !== WebSocket.OPEN || !bridgeId) return;
+
+    commands.filter(Boolean).forEach((command) => {
+      uiSocket.send(
+        JSON.stringify({
+          type: 'autopilot_command',
+          bridge_id: bridgeId,
+          ...command,
+        })
+      );
+    });
+  }
+
+  function readyPair() {
+    const leader = instanceById(leaderBridgeId);
+    const follower = instanceById(followerBridgeId);
+    if (!leader?.connected || !follower?.connected) return null;
+    return { leader, follower };
+  }
+
+  function resetFormation() {
+    const pair = readyPair();
+    if (!pair) {
+      setMessage('Connect a leader and follower GeoFS window before resetting.');
+      return;
+    }
+
+    const leaderTelemetry = algorithmTelemetryFor(pair.leader);
+    const commands = buildResetCommands(CONFIG, leaderTelemetry);
+    if (!commands.length) {
+      setMessage('Leader telemetry does not include a usable SI position yet.');
+      return;
+    }
+
+    sendCommand(pair.follower.bridge_id, commands);
+    lastCommandSentAt = 0;
+    setMessage('Follower reset 1000 m behind, 100 m right, and 100 m above the leader.');
   }
 
   function renderView() {
@@ -195,7 +246,9 @@
     const connectedCount = connectedInstances().length;
     const leader = instanceById(leaderBridgeId);
     const follower = instanceById(followerBridgeId);
-    const spacing = distanceNm(telemetryFor(leader), telemetryFor(follower));
+    const leaderTelemetry = telemetryFor(leader);
+    const followerTelemetry = telemetryFor(follower);
+    const spacing = distanceMeters(leaderTelemetry, followerTelemetry);
     const ready = Boolean(leader?.connected && follower?.connected);
 
     setBridgeStatus(connectedCount);
@@ -207,10 +260,11 @@
         : 'Following paused'
       : 'Waiting for two connected GeoFS windows';
     formationStatusEl.className = ready ? 'ok' : 'bad';
-    spacingReadoutEl.textContent = spacing == null ? '-' : formatNumber(spacing, 'nm', 2);
+    spacingReadoutEl.textContent = spacing == null ? '-' : formatNumber(spacing, 'm', 0);
     leaderTelemetryEl.textContent = telemetryLine(leader);
     followerTelemetryEl.textContent = telemetryLine(follower);
     followToggleButton.disabled = !ready;
+    resetButton.disabled = !ready;
     followToggleButton.textContent = controlEnabled ? 'Pause following' : 'Resume following';
 
     if (ready && !initialResetSent) {
@@ -219,53 +273,22 @@
     }
   }
 
-  function sendCommand(bridgeId, command, fields = {}) {
-    if (!uiSocket || uiSocket.readyState !== WebSocket.OPEN || !bridgeId) return;
-    uiSocket.send(
-      JSON.stringify({
-        type: 'autopilot_command',
-        bridge_id: bridgeId,
-        command,
-        ...fields,
-      })
-    );
-  }
-
-  function resetFormation() {
-    const follower = instanceById(followerBridgeId);
-    if (!follower?.connected) {
-      setMessage('Connect a follower GeoFS window before priming the formation controls.');
-      return;
-    }
-
-    sendCommand(follower.bridge_id, 'control_enable');
-    sendCommand(follower.bridge_id, 'controls_neutral');
-    lastCommandSentAt = 0;
-    setMessage('Follower controls primed from the synced Tampermonkey geoBridge API. Hand-fly the leader; the follower will track behind it.');
-  }
-
   function controlFormation() {
     if (!controlEnabled) return;
     const now = Date.now();
     if (now - lastCommandSentAt < CONFIG.commandIntervalMs) return;
 
-    const leader = instanceById(leaderBridgeId);
-    const follower = instanceById(followerBridgeId);
-    const leaderTelemetry = telemetryFor(leader);
-    const followerTelemetry = telemetryFor(follower);
-    if (!leader?.connected || !follower?.connected || !leaderTelemetry || !followerTelemetry) {
-      return;
-    }
+    const pair = readyPair();
+    if (!pair) return;
 
-
-    const wake = wakeFromLeaderToFollower(leaderTelemetry, followerTelemetry);
-    const followerCommand = injectWakeIntoFollowerCommand(
-      buildFollowerCommand(CONFIG, leaderTelemetry, followerTelemetry),
-      wake
+    const commands = buildFollowerCommands(
+      CONFIG,
+      algorithmTelemetryFor(pair.leader),
+      algorithmTelemetryFor(pair.follower)
     );
-    if (!followerCommand) return;
+    if (!commands.length) return;
 
-    sendCommand(follower.bridge_id, 'controls_set', { controls: followerCommand.controls });
+    sendCommand(pair.follower.bridge_id, commands);
     lastCommandSentAt = now;
   }
 
@@ -330,9 +353,19 @@
     controlEnabled = !controlEnabled;
     const follower = instanceById(followerBridgeId);
     if (follower?.connected) {
-      sendCommand(follower.bridge_id, controlEnabled ? 'control_enable' : 'control_disable');
+      sendCommand(
+        follower.bridge_id,
+        controlEnabled
+          ? [Commands.autopilotEnable()]
+          : [Commands.autopilotDisable(), Commands.controlsNeutral()]
+      );
     }
     renderView();
+  });
+
+  resetButton.addEventListener('click', () => {
+    initialResetSent = true;
+    resetFormation();
   });
 
   connectUiSocket();

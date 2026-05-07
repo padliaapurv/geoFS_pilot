@@ -63,8 +63,19 @@
     bridgeId: null,
   };
 
+  const METERS_PER_FOOT = 0.3048;
+  const METERS_PER_SECOND_PER_KNOT = 0.514444;
   const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
   const num = (v, fallback = 0) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
+  const radToDeg = (radians) => (Number(radians) * 180) / Math.PI;
+  const metersToFeet = (meters) => Number(meters) / METERS_PER_FOOT;
+  const metersPerSecondToKnots = (metersPerSecond) =>
+    Number(metersPerSecond) / METERS_PER_SECOND_PER_KNOT;
+
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
 
   function readTelemetry() {
     const g = window.geofs;
@@ -208,6 +219,186 @@
     return { ok: false, action: name, via: 'missing_setter' };
   }
 
+  function commandFailed(error) {
+    return { ok: false, error };
+  }
+
+  function invokeFirst(candidates) {
+    for (const candidate of candidates) {
+      const target = candidate.target;
+      const name = candidate.name;
+      if (!target || typeof target[name] !== 'function') continue;
+      return {
+        ok: true,
+        via: candidate.via || name,
+        result: target[name](...(candidate.args || [])) ?? null,
+      };
+    }
+    return null;
+  }
+
+  function setExistingNumber(target, property, value) {
+    if (!target || !(property in target) || !Number.isFinite(Number(value))) return false;
+    target[property] = Number(value);
+    return true;
+  }
+
+  function readAutopilotEnabled() {
+    const ap = window.geofs?.autopilot;
+    const candidates = [ap?.on, ap?.enabled, ap?.isOn, ap?.active];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'boolean') return candidate;
+    }
+    return null;
+  }
+
+  function setAutopilotEnabled(enabled) {
+    const ap = window.geofs?.autopilot;
+    if (!ap) return commandFailed('GeoFS autopilot object is unavailable');
+
+    const direct = invokeFirst([
+      { target: ap, name: enabled ? 'turnOn' : 'turnOff', via: `autopilot.${enabled ? 'turnOn' : 'turnOff'}` },
+      { target: ap, name: 'setEnabled', args: [enabled], via: 'autopilot.setEnabled' },
+      { target: ap, name: 'set', args: [enabled], via: 'autopilot.set' },
+    ]);
+    if (direct) return direct;
+
+    const setter = window.controls?.setters?.toggleAutoPilot;
+    const current = readAutopilotEnabled();
+    if (typeof setter === 'function' && current != null) {
+      if (current !== enabled) setter();
+      return { ok: true, via: 'setters.toggleAutoPilot', enabled };
+    }
+
+    return commandFailed(`GeoFS autopilot ${enabled ? 'enable' : 'disable'} API is unavailable`);
+  }
+
+  function setAutopilotTargetProperty(ap, names, value) {
+    for (const name of names) {
+      if (setExistingNumber(ap, name, value)) return name;
+    }
+    return null;
+  }
+
+  function setAutopilotTargets(targets = {}) {
+    const ap = window.geofs?.autopilot;
+    if (!ap) return commandFailed('GeoFS autopilot object is unavailable');
+
+    const headingDeg = finite(targets.heading_rad) == null ? null : radToDeg(targets.heading_rad);
+    const altitudeFt = finite(targets.altitude_m) == null ? null : metersToFeet(targets.altitude_m);
+    const speedKts =
+      finite(targets.speed_mps) == null ? null : metersPerSecondToKnots(targets.speed_mps);
+    const applied = [];
+    const missing = [];
+
+    if (headingDeg != null) {
+      const result =
+        invokeFirst([
+          { target: ap, name: 'setCourse', args: [headingDeg], via: 'autopilot.setCourse' },
+          { target: ap, name: 'setHeading', args: [headingDeg], via: 'autopilot.setHeading' },
+        ]) ||
+        (setAutopilotTargetProperty(ap, ['heading', 'headingBug', 'course'], headingDeg)
+          ? { ok: true, via: 'autopilot.headingProperty' }
+          : null);
+      if (result) applied.push({ target: 'heading_rad', via: result.via });
+      else missing.push('heading_rad');
+    }
+
+    if (altitudeFt != null) {
+      const result =
+        invokeFirst([
+          { target: ap, name: 'setAltitude', args: [altitudeFt], via: 'autopilot.setAltitude' },
+          { target: ap, name: 'setAltitudeHold', args: [altitudeFt], via: 'autopilot.setAltitudeHold' },
+        ]) ||
+        (setAutopilotTargetProperty(ap, ['altitude', 'altitudeHold', 'targetAltitude'], altitudeFt)
+          ? { ok: true, via: 'autopilot.altitudeProperty' }
+          : null);
+      if (result) applied.push({ target: 'altitude_m', via: result.via });
+      else missing.push('altitude_m');
+    }
+
+    if (speedKts != null) {
+      const result =
+        invokeFirst([
+          { target: ap, name: 'setSpeed', args: [speedKts], via: 'autopilot.setSpeed' },
+          { target: ap, name: 'setAirSpeed', args: [speedKts], via: 'autopilot.setAirSpeed' },
+        ]) ||
+        (setAutopilotTargetProperty(ap, ['speed', 'airspeed', 'targetSpeed'], speedKts)
+          ? { ok: true, via: 'autopilot.speedProperty' }
+          : null);
+      if (result) applied.push({ target: 'speed_mps', via: result.via });
+      else missing.push('speed_mps');
+    }
+
+    if (missing.length) {
+      return commandFailed(`GeoFS autopilot target API missing for: ${missing.join(', ')}`);
+    }
+    return { ok: true, applied };
+  }
+
+  function resetPose(pose = {}) {
+    const aircraft = window.geofs?.aircraft?.instance;
+    if (!aircraft) return commandFailed('GeoFS aircraft instance is unavailable');
+
+    const latDeg = finite(pose.lat_rad) == null ? null : radToDeg(pose.lat_rad);
+    const lonDeg = finite(pose.lon_rad) == null ? null : radToDeg(pose.lon_rad);
+    const altitudeM = finite(pose.altitude_m);
+    const headingDeg = finite(pose.heading_rad) == null ? null : radToDeg(pose.heading_rad);
+    const speedMps = finite(pose.speed_mps);
+
+    if (latDeg == null || lonDeg == null || altitudeM == null) {
+      return commandFailed('reset_pose requires lat_rad, lon_rad, and altitude_m');
+    }
+
+    const apiResult = invokeFirst([
+      {
+        target: window.geofs?.api,
+        name: 'setAircraftPosition',
+        args: [latDeg, lonDeg, altitudeM, headingDeg, speedMps],
+        via: 'geofs.api.setAircraftPosition',
+      },
+      {
+        target: aircraft,
+        name: 'setPosition',
+        args: [latDeg, lonDeg, altitudeM, headingDeg, speedMps],
+        via: 'aircraft.setPosition',
+      },
+      {
+        target: aircraft,
+        name: 'setLocation',
+        args: [latDeg, lonDeg, altitudeM, headingDeg, speedMps],
+        via: 'aircraft.setLocation',
+      },
+    ]);
+    if (apiResult) return apiResult;
+
+    const lla = Array.isArray(aircraft.llaLocation)
+      ? aircraft.llaLocation
+      : Array.isArray(aircraft.lla)
+        ? aircraft.lla
+        : null;
+
+    if (!lla) {
+      return commandFailed('GeoFS reset pose API is unavailable');
+    }
+
+    lla[0] = latDeg;
+    lla[1] = lonDeg;
+    lla[2] = altitudeM;
+    if (Array.isArray(aircraft.lastLlaLocation)) {
+      aircraft.lastLlaLocation[0] = latDeg;
+      aircraft.lastLlaLocation[1] = lonDeg;
+      aircraft.lastLlaLocation[2] = altitudeM;
+    }
+    if (Array.isArray(aircraft.htr) && headingDeg != null) aircraft.htr[0] = headingDeg;
+    if (headingDeg != null && window.geofs?.animation?.values) {
+      window.geofs.animation.values.heading360 = ((headingDeg % 360) + 360) % 360;
+    }
+    if (speedMps != null && 'trueAirSpeed' in aircraft) aircraft.trueAirSpeed = speedMps;
+
+    return { ok: true, via: Array.isArray(aircraft.llaLocation) ? 'aircraft.llaLocation' : 'aircraft.lla' };
+  }
+
 
   function generateBridgeId() {
     const random =
@@ -284,6 +475,15 @@
 
   function runCommand(message = {}) {
     switch (message.command) {
+      case 'autopilot_enable':
+        geoBridge.controls.disable();
+        return geoBridge.autopilot.enable();
+      case 'autopilot_disable':
+        return geoBridge.autopilot.disable();
+      case 'autopilot_targets':
+        return geoBridge.autopilot.targets(message.targets || message.value || {});
+      case 'reset_pose':
+        return geoBridge.pose.reset(message.pose || message.value || {});
       case 'control_enable':
         return { ok: true, enabled: geoBridge.controls.enable() };
       case 'control_disable':
@@ -355,6 +555,22 @@
 
   const geoBridge = {
     telemetry: { read: () => readTelemetry() },
+    autopilot: {
+      enable() {
+        return setAutopilotEnabled(true);
+      },
+      disable() {
+        return setAutopilotEnabled(false);
+      },
+      targets(targets) {
+        return setAutopilotTargets(targets);
+      },
+    },
+    pose: {
+      reset(pose) {
+        return resetPose(pose);
+      },
+    },
     controls: {
       enabled: false,
       enable() {
@@ -390,7 +606,7 @@
       },
     },
     discrete: {
-      gearToggle: () => callSetter('setGearToggle'),
+      gearToggle: () => callSetter('setGear', window.controls?.gear?.target > 0.5 ? 0 : 1),
       gearUp: () => callSetter('setGear', 0),
       gearDown: () => callSetter('setGear', 1),
       flapsUp: () => callSetter('setFlapsUp'),
@@ -398,15 +614,17 @@
       flapsCycle: () => callSetter('cycleFlaps'),
       brakesOn: () => callSetter('setBrakes', 1),
       brakesOff: () => callSetter('setBrakes', 0),
-      parkingBrakeToggle: () => callSetter('setParkingBrakeToggle'),
-      enginesToggle: () => callSetter('setEngineOn'),
-      autopilotToggle: () => callSetter('setAutoPilot'),
-      airbrakesToggle: () => callSetter('setAirbrakesToggle'),
+      parkingBrakeToggle: () => callSetter('toggleParkingBrake'),
+      enginesToggle: () => callSetter('toggleEngines'),
+      autopilotToggle: () => callSetter('toggleAutoPilot'),
+      airbrakesToggle: () => callSetter(
+        window.controls?.airbrakes?.target > 0.5 ? 'setAirbrakesUp' : 'setAirbrakesDown'
+      ),
       airbrakesFull: () => callSetter('setAirbrakes', 1),
       airbrakesRetract: () => callSetter('setAirbrakes', 0),
-      trimUp: () => callSetter('trimUp'),
-      trimDown: () => callSetter('trimDown'),
-      trimNeutral: () => callSetter('trimZero'),
+      trimUp: () => callSetter('setElevatorTrimUp'),
+      trimDown: () => callSetter('setElevatorTrimDown'),
+      trimNeutral: () => callSetter('setElevatorTrimNeutral'),
     },
     debug: {
       status() {
