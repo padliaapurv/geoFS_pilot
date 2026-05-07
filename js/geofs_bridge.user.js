@@ -15,6 +15,11 @@
   const READY_POLL_MS = 250;
   const BRIDGE_FLAG = '__geoBridgeWrappedByScript';
 
+  const WS_URL = 'ws://127.0.0.1:52137';
+  const TELEMETRY_INTERVAL_MS = 250;
+  const RECONNECT_BASE_MS = 1000;
+  const RECONNECT_MAX_MS = 10000;
+
   function isReady() {
     return !!(
       window.geofs &&
@@ -51,6 +56,11 @@
     lastAfter: null,
     lastTime: null,
     cmd: { roll: 0, pitch: 0, yaw: 0, throttle: null },
+    socket: null,
+    socketReconnectTimer: null,
+    socketReconnectDelay: RECONNECT_BASE_MS,
+    telemetryTimer: null,
+    bridgeId: null,
   };
 
   const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
@@ -198,6 +208,154 @@
     return { ok: false, action: name, via: 'missing_setter' };
   }
 
+
+  function getBridgeId() {
+    if (state.bridgeId) return state.bridgeId;
+    const key = 'geoBridge.bridgeId';
+    let bridgeId = window.localStorage?.getItem(key);
+    if (!bridgeId) {
+      const random =
+        window.crypto?.randomUUID?.() ||
+        `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      bridgeId = `geofs-${random}`;
+      window.localStorage?.setItem(key, bridgeId);
+    }
+    state.bridgeId = bridgeId;
+    return bridgeId;
+  }
+
+  function aircraftLabel() {
+    const aircraft = window.geofs?.aircraft?.instance;
+    return (
+      aircraft?.definition?.name ||
+      aircraft?.aircraftRecord?.name ||
+      aircraft?.id ||
+      document.title ||
+      'GeoFS aircraft'
+    );
+  }
+
+  function sendBridgeMessage(payload) {
+    const ws = state.socket;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(
+      JSON.stringify({
+        bridge_id: getBridgeId(),
+        label: aircraftLabel(),
+        ...payload,
+      })
+    );
+    return true;
+  }
+
+  function startTelemetryStream() {
+    if (state.telemetryTimer) window.clearInterval(state.telemetryTimer);
+    state.telemetryTimer = window.setInterval(() => {
+      if (!state.ready) return;
+      sendBridgeMessage({
+        type: 'telemetry',
+        telemetry_schema: 'geoBridge.camelCase.v1',
+        ...readTelemetry(),
+      });
+    }, TELEMETRY_INTERVAL_MS);
+  }
+
+  function stopTelemetryStream() {
+    if (state.telemetryTimer) window.clearInterval(state.telemetryTimer);
+    state.telemetryTimer = null;
+  }
+
+  function scheduleSocketReconnect() {
+    if (state.socketReconnectTimer) return;
+    const delay = state.socketReconnectDelay;
+    state.socketReconnectDelay = Math.min(RECONNECT_MAX_MS, delay * 1.5);
+    state.socketReconnectTimer = window.setTimeout(() => {
+      state.socketReconnectTimer = null;
+      connectSocket();
+    }, delay);
+  }
+
+  function commandResult(message, result) {
+    sendBridgeMessage({
+      type: 'command_result',
+      command: message.command,
+      ok: !!result?.ok,
+      result: result || null,
+      error: result?.ok ? null : result?.error || `Unsupported command: ${message.command}`,
+    });
+  }
+
+  function runCommand(message = {}) {
+    switch (message.command) {
+      case 'control_enable':
+        return { ok: true, enabled: geoBridge.controls.enable() };
+      case 'control_disable':
+        return { ok: true, enabled: geoBridge.controls.disable() };
+      case 'controls_neutral':
+        return geoBridge.controls.neutral();
+      case 'controls_set':
+        geoBridge.controls.enable();
+        return geoBridge.controls.set(message.controls || message.value || {});
+      case 'discrete': {
+        const action = message.action || message.value;
+        const fn = geoBridge.discrete[action];
+        if (typeof fn !== 'function') {
+          return { ok: false, error: `Unknown discrete action: ${action}` };
+        }
+        return fn();
+      }
+      default:
+        return { ok: false, error: `Unsupported command: ${message.command}` };
+    }
+  }
+
+  function connectSocket() {
+    if (state.socket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(state.socket.readyState)) {
+      return;
+    }
+
+    const ws = new WebSocket(WS_URL);
+    state.socket = ws;
+
+    ws.addEventListener('open', () => {
+      state.socketReconnectDelay = RECONNECT_BASE_MS;
+      sendBridgeMessage({
+        type: 'hello',
+        version: 'geoBridge.camelCase.v1',
+        telemetry_schema: 'geoBridge.camelCase.v1',
+        aircraft: aircraftLabel(),
+      });
+      startTelemetryStream();
+      console.log(`${TAG} connected to ${WS_URL}`);
+    });
+
+    ws.addEventListener('message', (event) => {
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch (err) {
+        console.warn(`${TAG} ignored invalid bridge message`, err);
+        return;
+      }
+      if (message.type === 'ping') {
+        sendBridgeMessage({ type: 'pong' });
+        return;
+      }
+      if (message.type !== 'autopilot_command') return;
+      commandResult(message, runCommand(message));
+    });
+
+    ws.addEventListener('close', () => {
+      stopTelemetryStream();
+      if (state.socket === ws) state.socket = null;
+      if (state.installed) scheduleSocketReconnect();
+    });
+
+    ws.addEventListener('error', () => {
+      ws.close();
+    });
+  }
+
   const geoBridge = {
     telemetry: { read: () => readTelemetry() },
     controls: {
@@ -280,19 +438,29 @@
           };
           state.frameCallbackId = window.geofs.api.addFrameCallback(state.frameCallback);
         }
+        connectSocket();
         state.installed = true;
         return true;
       },
       uninstall() {
+        state.installed = false;
         geoBridge.controls.disable();
         uninstallKeyListener();
         uninstallUpdateWrapper();
+        stopTelemetryStream();
+        if (state.socketReconnectTimer) {
+          window.clearTimeout(state.socketReconnectTimer);
+          state.socketReconnectTimer = null;
+        }
+        if (state.socket) {
+          state.socket.close();
+          state.socket = null;
+        }
         if (state.frameCallbackId != null) {
           window.geofs?.api?.removeFrameCallback?.(state.frameCallbackId);
         }
         state.frameCallback = null;
         state.frameCallbackId = null;
-        state.installed = false;
         delete window.geoBridge;
         return true;
       },

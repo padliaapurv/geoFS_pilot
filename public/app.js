@@ -57,6 +57,49 @@
     return `${number.toFixed(digits)} ${suffix}`;
   }
 
+
+  function finiteNumber(...values) {
+    for (const value of values) {
+      const number = Number(value);
+      if (Number.isFinite(number)) return number;
+    }
+    return null;
+  }
+
+  function telemetryFor(instance) {
+    const telemetry = instance?.telemetry || null;
+    if (!telemetry) return {};
+    const lla = Array.isArray(telemetry.lla) ? telemetry.lla : [];
+    const htr = Array.isArray(telemetry.htr) ? telemetry.htr : [];
+    const altitudeMeters = finiteNumber(telemetry.altitudeMeters, lla[2]);
+    const speedKts = finiteNumber(
+      telemetry.speed_kts,
+      telemetry.ktas,
+      telemetry.kias,
+      telemetry.groundSpeedKnt,
+      telemetry.groundSpeedMS != null ? Number(telemetry.groundSpeedMS) * 1.94384 : null,
+      telemetry.speedMS != null ? Number(telemetry.speedMS) * 1.94384 : null
+    );
+
+    return {
+      raw: telemetry,
+      aircraft: telemetry.aircraft || instance?.hello?.aircraft || instance?.label || '-',
+      lat_deg: finiteNumber(telemetry.lat_deg, lla[0]),
+      lon_deg: finiteNumber(telemetry.lon_deg, lla[1]),
+      altitude_ft: finiteNumber(
+        telemetry.altitude_ft,
+        telemetry.altitudeFeet,
+        altitudeMeters != null ? altitudeMeters * 3.28084 : null
+      ),
+      heading_deg: finiteNumber(telemetry.heading_deg, telemetry.headingDeg, htr[0]),
+      pitch_deg: finiteNumber(telemetry.pitch_deg, telemetry.tiltDeg, htr[1]),
+      roll_deg: finiteNumber(telemetry.roll_deg, telemetry.rollDeg, htr[2]),
+      speed_kts: speedKts,
+      throttle: finiteNumber(telemetry.throttle),
+      time: finiteNumber(telemetry.time),
+    };
+  }
+
   function normalizeHeading(degrees) {
     return ((Number(degrees) % 360) + 360) % 360;
   }
@@ -198,7 +241,7 @@
     let card = instanceNodes.get(instance.bridge_id);
     if (!card) card = createInstanceNode(instance);
 
-    const telemetry = instance.telemetry || {};
+    const telemetry = telemetryFor(instance);
     const isLeader = instance.bridge_id === leaderBridgeId;
     const isFollower = instance.bridge_id === followerBridgeId;
     const status = card.querySelector('.instance-card-status');
@@ -250,7 +293,7 @@
   }
 
   function telemetryLine(instance) {
-    const telemetry = instance?.telemetry || {};
+    const telemetry = telemetryFor(instance);
     return [
       instance?.label || '-',
       formatNumber(telemetry.altitude_ft, 'ft'),
@@ -269,7 +312,7 @@
     const connectedCount = connectedInstances().length;
     const leader = instanceById(leaderBridgeId);
     const follower = instanceById(followerBridgeId);
-    const spacing = distanceNm(leader?.telemetry, follower?.telemetry);
+    const spacing = distanceNm(telemetryFor(leader), telemetryFor(follower));
     const ready = Boolean(leader?.connected && follower?.connected);
 
     setBridgeStatus(connectedCount);
@@ -307,25 +350,16 @@
   }
 
   function resetFormation() {
-    const leader = instanceById(leaderBridgeId);
     const follower = instanceById(followerBridgeId);
-    if (!leader?.connected || !follower?.connected) {
-      setMessage('Connect two GeoFS windows before resetting the formation.');
+    if (!follower?.connected) {
+      setMessage('Connect a follower GeoFS window before priming the formation controls.');
       return;
     }
 
-    const leaderPose = { ...CONFIG.startPose };
-    const followerPosition = offsetPositionByNm(
-      leaderPose,
-      leaderPose.heading_deg + 180,
-      CONFIG.desiredSpacingNm
-    );
-    const followerPose = { ...leaderPose, ...followerPosition };
-
-    sendCommand(leader.bridge_id, 'reset_pose', { pose: leaderPose });
-    sendCommand(follower.bridge_id, 'reset_pose', { pose: followerPose });
+    sendCommand(follower.bridge_id, 'control_enable');
+    sendCommand(follower.bridge_id, 'controls_neutral');
     lastCommandSentAt = 0;
-    setMessage('Reset sent: leader placed ahead, follower placed behind at the start pose.');
+    setMessage('Follower controls primed from the synced Tampermonkey geoBridge API. Hand-fly the leader; the follower will track behind it.');
   }
 
   function clamp(value, min, max) {
@@ -343,7 +377,9 @@
   function buildFollowerCommand(leaderTelemetry, followerTelemetry) {
     if (!hasPosition(leaderTelemetry) || !hasPosition(followerTelemetry)) return null;
 
-    const leaderHeading = normalizeHeading(leaderTelemetry.heading_deg || CONFIG.startPose.heading_deg);
+    const leaderHeading = normalizeHeading(
+      leaderTelemetry.heading_deg || CONFIG.startPose.heading_deg
+    );
     const targetPosition = offsetPositionByNm(
       leaderTelemetry,
       leaderHeading + 180,
@@ -360,17 +396,28 @@
       CONFIG.gains.maxClosureKts
     );
     const leaderSpeed = Number(leaderTelemetry.speed_kts) || CONFIG.startPose.speed_kts;
-    const speed = spacing != null && spacing < CONFIG.desiredSpacingNm * 0.5
-      ? Math.max(90, leaderSpeed - CONFIG.gains.maxClosureKts)
-      : leaderSpeed + closure;
+    const targetSpeed =
+      spacing != null && spacing < CONFIG.desiredSpacingNm * 0.5
+        ? Math.max(90, leaderSpeed - CONFIG.gains.maxClosureKts)
+        : leaderSpeed + closure;
+    const headingError = shortestHeadingDelta(followerTelemetry.heading_deg || 0, headingToTarget);
+    const altitudeError =
+      (Number(leaderTelemetry.altitude_ft) || CONFIG.startPose.altitude_ft) -
+      (Number(followerTelemetry.altitude_ft) || CONFIG.startPose.altitude_ft);
+    const speedError = targetSpeed - (Number(followerTelemetry.speed_kts) || targetSpeed);
+    const throttleBase =
+      Number.isFinite(Number(followerTelemetry.throttle)) ? Number(followerTelemetry.throttle) : 0.65;
 
     return {
-      heading_deg: normalizeHeading(headingToTarget),
-      altitude_ft: Number(leaderTelemetry.altitude_ft) || CONFIG.startPose.altitude_ft,
-      speed_kts: speed,
+      controls: {
+        roll: clamp(headingError / 35, -0.8, 0.8),
+        pitch: clamp(altitudeError / 1500, -0.4, 0.4),
+        yaw: 0,
+        throttle: clamp(throttleBase + speedError / 120, 0, 1),
+      },
       target_spacing_nm: CONFIG.desiredSpacingNm,
       current_spacing_nm: spacing,
-      heading_error_deg: shortestHeadingDelta(followerTelemetry.heading_deg || 0, headingToTarget),
+      heading_error_deg: headingError,
     };
   }
 
@@ -381,15 +428,12 @@
 
     const leader = instanceById(leaderBridgeId);
     const follower = instanceById(followerBridgeId);
-    const leaderTelemetry = leader?.telemetry;
-    const followerTelemetry = follower?.telemetry;
+    const leaderTelemetry = telemetryFor(leader);
+    const followerTelemetry = telemetryFor(follower);
     if (!leader?.connected || !follower?.connected || !leaderTelemetry || !followerTelemetry) {
       return;
     }
 
-    sendCommand(leader.bridge_id, 'set_heading', { value: CONFIG.startPose.heading_deg });
-    sendCommand(leader.bridge_id, 'set_altitude', { value: CONFIG.startPose.altitude_ft });
-    sendCommand(leader.bridge_id, 'set_speed', { value: CONFIG.startPose.speed_kts });
 
     const wake = wakeFromLeaderToFollower(leaderTelemetry, followerTelemetry);
     const followerCommand = injectWakeIntoFollowerCommand(
@@ -398,9 +442,7 @@
     );
     if (!followerCommand) return;
 
-    sendCommand(follower.bridge_id, 'set_heading', { value: followerCommand.heading_deg });
-    sendCommand(follower.bridge_id, 'set_altitude', { value: followerCommand.altitude_ft });
-    sendCommand(follower.bridge_id, 'set_speed', { value: followerCommand.speed_kts });
+    sendCommand(follower.bridge_id, 'controls_set', { controls: followerCommand.controls });
     lastCommandSentAt = now;
   }
 
@@ -468,6 +510,10 @@
 
   followToggleButton.addEventListener('click', () => {
     controlEnabled = !controlEnabled;
+    const follower = instanceById(followerBridgeId);
+    if (follower?.connected) {
+      sendCommand(follower.bridge_id, controlEnabled ? 'control_enable' : 'control_disable');
+    }
     renderView();
   });
 
