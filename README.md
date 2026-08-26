@@ -1,57 +1,113 @@
-# GeoFS Boeing 777-200 trim test
+# GeoFS Boeing 777-200 wake simulation
 
-This repository contains one GeoFS userscript for one test case:
+This repository uses the native GeoFS Boeing 777-200 flight model to test wake following and peak seeking.
 
-- aircraft: Boeing 777-200
-- flight condition: steady, level flight
-- target lift coefficient: `CL = 0.5`
+The current system has:
 
-The script computes the required true airspeed from
+- Boeing 777-200 trim at `CL = 0.5`
+- two GeoFS tabs: leader and follower
+- leader-to-follower state transfer with browser `BroadcastChannel`
+- a local 3-D wake velocity input
+- a loadable 2-D wake grid
+- a temporary moving vortex/wake model
+- fixed-point, truth-tracking, and peak-seeking modes
+- run history and CSV output
 
-```text
-L = W = 0.5 * rho * V^2 * S * CL
-Vtrim = sqrt(2 * m * g / (rho * S * CL))
-```
+No Node server is required.
 
-It uses:
+## Install
 
-- Boeing 777-200 wing area: `S = 427.8 m^2`
-- GeoFS aircraft mass when that value is available
-- ISA density at the commanded altitude
-- GeoFS autopilot for altitude, heading, and KIAS speed hold
+Install `js/geofs_wake_sim.user.js` in Tampermonkey.
 
-## Run
+Open two GeoFS tabs. Select the Boeing 777-200 in both tabs.
 
-1. Install Tampermonkey.
-2. Add `js/b777_trim.user.js` as a userscript.
-3. Open GeoFS.
-4. Select the Boeing 777-200.
-5. Open the browser console.
-6. Run:
+## 1. Start the leader
+
+In the first tab:
 
 ```js
-b777Trim.start()
-```
-
-The default target is `CL = 0.5`. If the aircraft starts near the ground, the script tries to place it at 10,000 ft before it enables the GeoFS autopilot.
-
-Use a specific mass or altitude when required:
-
-```js
-b777Trim.start({
+geofsWake.startLeader({
   cl: 0.5,
-  massKg: 200000,
   altitudeFt: 10000,
   headingDeg: 90,
+  massKg: 200000,
 })
 ```
 
-Read the current trim state:
+The leader holds the `CL = 0.5` trim KIAS, altitude, and heading.
+
+## 2. Start the follower
+
+In the second tab:
 
 ```js
-b777Trim.status()
+geofsWake.startFollower({
+  cl: 0.5,
+  massKg: 200000,
+  targetDownstreamM: 300,
+  initialCrossM: 0,
+  initialVerticalM: 0,
+  mode: 'seek',
+})
 ```
 
-The script converts the `CL` target to the equivalent KIAS command used by the GeoFS autopilot. It uses actual TAS and ISA density to estimate the aerodynamic `CL`.
+The follower is placed approximately 300 m behind the leader. It receives leader state, evaluates the wake at its current relative position, and injects that wake into the GeoFS wind input.
 
-The status includes target KIAS, target TAS, actual KIAS, actual TAS, estimated `CL`, altitude error, vertical speed, angle of attack, pitch, and throttle. The script reports `trim converged` after the speed, altitude, and vertical-speed errors remain inside the set tolerances for five seconds.
+## Load your wake grid
+
+Load the grid in the follower tab before `startFollower()`:
+
+```js
+geofsWake.grid.load({
+  xM,             // lateral coordinates, m; positive right
+  yM,             // vertical coordinates, m; positive up
+  uMps,           // forward physical air-mass velocity, [y][x]
+  vMps,           // lateral physical air-mass velocity, [y][x]
+  wMps,           // vertical physical air-mass velocity, [y][x]
+  ideal: { xM: 25, yM: 5 }, // optional; used only for truth/debug
+})
+```
+
+If the grid only has cross-plane velocity:
+
+```js
+geofsWake.grid.load({ xM, yM, vxMps, vyMps })
+```
+
+This maps `vxMps -> vMps`, `vyMps -> wMps`, and sets `uMps = 0`.
+
+The sampler uses bilinear interpolation. See `docs/DESIGN.md` for sign conventions and optional downstream settings.
+
+## Modes
+
+Use one of these modes:
+
+```js
+geofsWake.guidance.setMode('hold')
+geofsWake.guidance.setMode('truth')
+geofsWake.guidance.setMode('seek')
+```
+
+`hold` keeps a fixed lateral/vertical point. Use it to validate wake injection first.
+
+`truth` follows the known temporary/grid ideal point. Use it to validate formation guidance.
+
+`seek` does not command the known ideal point. It dithers lateral and vertical position and moves the dither center using the measured follower objective. The placeholder objective rewards lower throttle while the aircraft holds speed and altitude.
+
+## Useful commands
+
+```js
+geofsWake.status()
+geofsWake.guidance.hold(20, 5)
+geofsWake.data.history()
+geofsWake.data.csv()
+geofsWake.grid.example()
+geofsWake.grid.clear()
+geofsWake.stop()
+```
+
+## Implementation
+
+The follower writes a dynamic east-north-up vector to `weather.currentWindVector`. GeoFS uses this vector in its native air-relative velocity and airfoil calculations. The script therefore does not replace the Boeing 777 flight model.
+
+The current injection is one wake vector at the aircraft reference point. It does not yet apply different velocity values across the wing span. The next fidelity step is described in `docs/DESIGN.md`.
