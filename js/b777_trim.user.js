@@ -14,6 +14,7 @@
   const G = 9.80665;
   const FT_TO_M = 0.3048;
   const KNOT_TO_MPS = 0.514444;
+  const RHO0 = 1.225;
 
   const AIRCRAFT = Object.freeze({
     name: 'Boeing 777-200',
@@ -38,6 +39,7 @@
   };
 
   const finite = (value) => {
+    if (value === null || value === undefined || value === '') return null;
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
   };
@@ -78,6 +80,11 @@
   function trimTasMps(massKg, altitudeM, cl) {
     const rho = isaDensity(altitudeM);
     return Math.sqrt((2 * massKg * G) / (rho * AIRCRAFT.wingAreaM2 * cl));
+  }
+
+  function trimKias(massKg, cl) {
+    const easMps = Math.sqrt((2 * massKg * G) / (RHO0 * AIRCRAFT.wingAreaM2 * cl));
+    return easMps / KNOT_TO_MPS;
   }
 
   function aircraftName() {
@@ -126,6 +133,7 @@
       altitudeM: finite(lla[2]) ?? (finite(av.altitude) ?? 0) * FT_TO_M,
       altitudeFt: finite(av.altitude) ?? (finite(lla[2]) ?? 0) / FT_TO_M,
       headingDeg: finite(av.heading360) ?? finite(a?.htr?.[0]) ?? 0,
+      kias: finite(av.kias),
       tasKt: finite(av.ktas) ?? ((finite(a?.trueAirSpeed) ?? 0) / KNOT_TO_MPS),
       verticalSpeedFpm: finite(av.verticalSpeed) ?? 0,
       aoaDeg: finite(av.aoa),
@@ -154,7 +162,7 @@
     return null;
   }
 
-  function setAutopilotTargets({ headingDeg, altitudeFt, speedKt }) {
+  function setAutopilotTargets({ headingDeg, altitudeFt, speedKias }) {
     const ap = window.geofs?.autopilot;
     if (!ap) throw new Error('GeoFS autopilot is not available.');
 
@@ -172,12 +180,14 @@
       ]) ||
       setExistingNumber(ap, ['altitude', 'altitudeHold', 'targetAltitude'], altitudeFt);
 
+    if (typeof ap.setSpeedMode === 'function') ap.setSpeedMode('knots');
+
     const speedVia =
       invokeFirst([
-        { target: ap, name: 'setSpeed', args: [speedKt], via: 'autopilot.setSpeed' },
-        { target: ap, name: 'setAirSpeed', args: [speedKt], via: 'autopilot.setAirSpeed' },
+        { target: ap, name: 'setSpeed', args: [speedKias], via: 'autopilot.setSpeed' },
+        { target: ap, name: 'setAirSpeed', args: [speedKias], via: 'autopilot.setAirSpeed' },
       ]) ||
-      setExistingNumber(ap, ['speed', 'airspeed', 'targetSpeed'], speedKt);
+      setExistingNumber(ap, ['speed', 'airspeed', 'targetSpeed'], speedKias);
 
     if (!headingVia || !altitudeVia || !speedVia) {
       throw new Error(
@@ -257,7 +267,7 @@
 
     const flight = currentFlightState();
     const cl = estimatedCl(state.command.massKg, flight.altitudeM, flight.tasKt);
-    const speedErrorKt = flight.tasKt - state.command.speedKt;
+    const speedErrorKt = (flight.kias ?? 0) - state.command.speedKias;
     const altitudeErrorFt = flight.altitudeFt - state.command.altitudeFt;
 
     return {
@@ -268,7 +278,9 @@
       massKg: state.command.massKg,
       wingAreaM2: AIRCRAFT.wingAreaM2,
       densityKgM3: isaDensity(flight.altitudeM),
-      targetSpeedKt: state.command.speedKt,
+      targetKias: state.command.speedKias,
+      kias: flight.kias,
+      targetTasKt: state.command.targetTasKt,
       tasKt: flight.tasKt,
       speedErrorKt,
       targetAltitudeFt: state.command.altitudeFt,
@@ -326,7 +338,8 @@
     const altitudeM = altitudeFt * FT_TO_M;
     const headingDeg = finite(options.headingDeg) ?? initial.headingDeg;
     const speedMps = trimTasMps(massKg, altitudeM, cl);
-    const speedKt = speedMps / KNOT_TO_MPS;
+    const targetTasKt = speedMps / KNOT_TO_MPS;
+    const speedKias = trimKias(massKg, cl);
 
     if (initial.altitudeFt < 2000 && options.reposition !== false) {
       const moved = moveToAltitude(altitudeFt, speedMps, headingDeg);
@@ -335,7 +348,7 @@
       }
     }
 
-    setAutopilotTargets({ headingDeg, altitudeFt, speedKt });
+    setAutopilotTargets({ headingDeg, altitudeFt, speedKias });
     enableAutopilot();
 
     state.command = {
@@ -343,7 +356,8 @@
       massKg,
       altitudeFt,
       headingDeg,
-      speedKt,
+      speedKias,
+      targetTasKt,
       settleSeconds: finite(options.settleSeconds) ?? DEFAULTS.settleSeconds,
       speedToleranceKt: finite(options.speedToleranceKt) ?? DEFAULTS.speedToleranceKt,
       altitudeToleranceFt: finite(options.altitudeToleranceFt) ?? DEFAULTS.altitudeToleranceFt,
@@ -371,6 +385,7 @@
     status,
     isaDensity,
     trimTasMps,
+    trimKias,
   });
 
   console.log('[b777Trim] ready. Run b777Trim.start()');

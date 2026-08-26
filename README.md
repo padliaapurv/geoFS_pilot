@@ -18,7 +18,7 @@ It uses:
 - Boeing 777-200 wing area: `S = 427.8 m^2`
 - GeoFS aircraft mass when that value is available
 - ISA density at the commanded altitude
-- GeoFS autopilot for altitude, heading, and speed hold
+- GeoFS autopilot for altitude, heading, and KIAS speed hold
 
 ## Run
 
@@ -52,4 +52,6 @@ Read the current trim state:
 b777Trim.status()
 ```
 
-The status includes target TAS, actual TAS, estimated `CL`, altitude error, vertical speed, angle of attack, pitch, and throttle. The script reports `trim converged` after the speed, altitude, and vertical-speed errors remain inside the set tolerances for five seconds.
+The script converts the `CL` target to the equivalent KIAS command used by the GeoFS autopilot. It uses actual TAS and ISA density to estimate the aerodynamic `CL`.
+
+The status includes target KIAS, target TAS, actual KIAS, actual TAS, estimated `CL`, altitude error, vertical speed, angle of attack, pitch, and throttle. The script reports `trim converged` after the speed, altitude, and vertical-speed errors remain inside the set tolerances for five seconds.
