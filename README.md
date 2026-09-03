@@ -114,7 +114,7 @@ The coordinate transforms, grid interpolation, extremum-seeking controller, and 
 npm test
 ```
 
-This does not replace testing in a real browser: the mocked `geofs.autopilot` API surface (`setCourse`/`setAltitude`/`setSpeed`/`turnOn`, with several documented fallbacks) is a best guess at GeoFS's real API from reading `js/wake/core.js`, and only an actual GeoFS session can confirm those calls exist and behave as assumed.
+This does not replace testing in a real browser: the mock models GeoFS's real, confirmed-by-live-testing quirks (`geofs.autopilot.turnOn()` re-captures current heading/altitude/speed as its own bugs, so targets must be set after turning the autopilot on; `aircraft.instance.place()` does not touch velocity, so `placeAircraft` writes `rigidBody.v_linearVelocity` directly; engines start via `controls.engine.on`, not a callable setter), but any further GeoFS API surface changes can only be confirmed in an actual GeoFS session.
 
 ## Implementation
 

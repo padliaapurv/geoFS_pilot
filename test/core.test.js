@@ -154,3 +154,79 @@ test('aircraftMassKg prefers an explicit override over the aircraft-reported mas
   const { W } = createSandbox();
   assert.equal(W.aircraftMassKg(180000), 180000);
 });
+
+// --- setThrottle / startEngines ---
+test('setThrottle clamps to [0, 1] and writes controls.throttle directly', () => {
+  const { W, sandbox } = createSandbox();
+  W.setThrottle(0.85);
+  assert.equal(sandbox.controls.throttle, 0.85);
+  W.setThrottle(1.5);
+  assert.equal(sandbox.controls.throttle, 1);
+  W.setThrottle(-0.2);
+  assert.equal(sandbox.controls.throttle, 0);
+});
+
+test('startEngines turns the engine on', () => {
+  const { W, sandbox } = createSandbox();
+  assert.equal(sandbox.controls.engine.on, false);
+  W.startEngines();
+  assert.equal(sandbox.controls.engine.on, true);
+});
+
+test('commandTrim starts the engines when they are off', async () => {
+  const { W, sandbox } = createSandbox();
+  await W.commandTrim({ cl: 0.5, altitudeFt: 10000, reposition: false });
+  assert.equal(sandbox.controls.engine.on, true);
+});
+
+test('commandTrim honors an explicit throttle override', async () => {
+  const { W, sandbox } = createSandbox();
+  sandbox.controls.throttle = 0.7;
+  await W.commandTrim({ cl: 0.5, altitudeFt: 10000, reposition: false, throttle: 0.95 });
+  assert.equal(sandbox.controls.throttle, 0.95);
+});
+
+// --- commandTrim / autopilot engage ordering ---
+// Found via live testing against real GeoFS: geofs.autopilot.turnOn() itself
+// re-captures the CURRENT heading/altitude/speed as its bugs, clobbering
+// anything set beforehand. commandTrim must call enableAutopilot() BEFORE
+// setAutopilotTargets(), not after, or the trim target is silently replaced
+// by whatever the aircraft happened to be doing at the moment it engaged.
+test('commandTrim sets autopilot targets that survive turnOn\'s current-state capture', async () => {
+  const { W, sandbox } = createSandbox();
+  // Mock's "current" flight state (heading 90, altitude 10000ft, kias 250)
+  // deliberately differs from the requested trim target below, so a
+  // regression to the old (setTargets-then-turnOn) order would leave the
+  // bugs at the current state instead of the requested target.
+  const trim = await W.commandTrim({ cl: 0.5, massKg: 200000, altitudeFt: 15000, headingDeg: 270, reposition: false });
+  const ap = sandbox.geofs.autopilot;
+  assert.equal(ap.values.altitude, 15000);
+  assert.equal(ap.values.course, 270);
+  closeTo(ap.values.speed, trim.speedKias, 1e-6, 'autopilot speed bug should be the trim target, not the pre-engage current speed');
+  assert.notEqual(ap.values.speed, 250, 'must not be left at the mock\'s pre-engage current kias');
+});
+
+// --- placeAircraft velocity ---
+// Found via live testing against real GeoFS: aircraft.instance.place(lla,
+// htr) only sets position/orientation. It never touched velocity, so a
+// teleported aircraft kept whatever velocity it had before (usually ~0) and
+// fell out of the sky in true free fall until the autopilot fought it back
+// under control (if it could at all). The real physics velocity lives at
+// rigidBody.v_linearVelocity, a plain [east, north, up] m/s vector in the
+// same ENU frame injectWakeWind already uses.
+test('placeAircraft sets rigidBody.v_linearVelocity from heading and speed, not just position', () => {
+  const { W, sandbox } = createSandbox();
+  const ok = W.placeAircraft({ latDeg: 10, lonDeg: 20, altitudeM: 3000, headingDeg: 90 }, 200);
+  assert.equal(ok, true);
+  const v = sandbox.geofs.aircraft.instance.rigidBody.v_linearVelocity;
+  closeTo(v[0], 200, 1e-6, 'east component at heading 90 (due east) should be the full speed');
+  closeTo(v[1], 0, 1e-6, 'north component at heading 90 should be ~zero');
+  closeTo(v[2], 0, 1e-6, 'level placement should have zero vertical velocity');
+});
+
+test('placeAircraft leaves velocity untouched when no speed is given', () => {
+  const { W, sandbox } = createSandbox();
+  sandbox.geofs.aircraft.instance.rigidBody.v_linearVelocity = [11, 22, 33];
+  W.placeAircraft({ latDeg: 10, lonDeg: 20, altitudeM: 3000, headingDeg: 90 }, undefined);
+  assert.deepEqual(Array.from(sandbox.geofs.aircraft.instance.rigidBody.v_linearVelocity), [11, 22, 33]);
+});

@@ -25,16 +25,29 @@ function makeMockGeofs({ aircraft = true } = {}) {
   const instance = aircraft ? {
     llaLocation: [37.6, -122.3, 3048],
     definition: { name: 'Boeing 777-200' },
-    rigidBody: { mass: 200000 },
+    rigidBody: { mass: 200000, v_linearVelocity: [0, 0, 0] },
+    place(lla, htr) { instance.llaLocation = lla.slice(); instance.htr = htr.slice(); },
   } : null;
 
   const autopilotCalls = [];
   const autopilot = {
-    setCourse: (v) => { autopilotCalls.push(['setCourse', v]); autopilot._heading = v; },
-    setAltitude: (v) => { autopilotCalls.push(['setAltitude', v]); autopilot._altitude = v; },
+    values: { course: 0, altitude: 0, speed: 0, verticalSpeed: 0 },
+    setCourse: (v) => { autopilotCalls.push(['setCourse', v]); autopilot.values.course = v; },
+    setAltitude: (v) => { autopilotCalls.push(['setAltitude', v]); autopilot.values.altitude = v; },
     setSpeedMode: (v) => { autopilotCalls.push(['setSpeedMode', v]); },
-    setSpeed: (v) => { autopilotCalls.push(['setSpeed', v]); autopilot._speed = v; },
-    turnOn: () => { autopilotCalls.push(['turnOn']); autopilot.on = true; },
+    setSpeed: (v) => { autopilotCalls.push(['setSpeed', v]); autopilot.values.speed = v; },
+    // Real GeoFS's turnOn() re-captures the CURRENT heading/altitude/speed as
+    // its own bugs as part of engaging -- see js/wake/core.js's commandTrim
+    // comment. Mirror that here so tests catch a regression to the old
+    // buggy order (setAutopilotTargets before enableAutopilot), which this
+    // mock would otherwise happily hide since it never overwrote anything.
+    turnOn: () => {
+      autopilotCalls.push(['turnOn']);
+      autopilot.setAltitude(values.altitude);
+      autopilot.setCourse(values.heading360);
+      autopilot.setSpeed(values.kias);
+      autopilot.on = true;
+    },
     on: false,
     _calls: autopilotCalls,
   };
@@ -82,7 +95,7 @@ function createSandbox(opts = {}) {
   sandbox.Error = Error;
 
   sandbox.geofs = makeMockGeofs(opts.geofs);
-  sandbox.controls = { throttle: 0.6 };
+  sandbox.controls = { throttle: 0.6, engine: { on: false } };
   sandbox.weather = makeMockWeather();
 
   vm.createContext(sandbox);

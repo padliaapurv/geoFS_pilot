@@ -164,6 +164,22 @@
     if (!h || !a || !s) throw new Error('GeoFS autopilot target API is incomplete.');
   };
 
+  W.setThrottle = function (fraction) {
+    if (!window.controls) throw new Error('GeoFS controls object is not available.');
+    window.controls.throttle = W.clamp(fraction, 0, 1);
+  };
+
+  // Found via live testing against real GeoFS: window.controls.engine.on
+  // starts false on a freshly selected aircraft, and there is no callable
+  // controls.setters.toggleEngines (its entries are non-function descriptor
+  // objects, not the setter functions their names suggest). Flipping the
+  // property directly is the real, persistent way to start the engines.
+  W.startEngines = function () {
+    if (!window.controls) throw new Error('GeoFS controls object is not available.');
+    if (!window.controls.engine) throw new Error('GeoFS engine state is not available.');
+    window.controls.engine.on = true;
+  };
+
   W.enableAutopilot = function () {
     const ap = window.geofs?.autopilot;
     if (!ap) throw new Error('GeoFS autopilot is not available.');
@@ -181,18 +197,35 @@
     throw new Error('GeoFS autopilot enable API is not available.');
   };
 
+  // Found via live testing against real GeoFS: geofs.api.setAircraftPosition
+  // and aircraft.instance.setPosition do not exist in the current build, so
+  // placement always fell through to aircraft.instance.place(lla, htr),
+  // which only sets position and orientation -- it silently ignores
+  // speedMps. The aircraft was therefore teleported with whatever velocity
+  // it already had (typically ~0), leaving it in true free fall at the new
+  // altitude, which reads as a wing stall (huge AoA, wild pitch swings)
+  // until it either crashes or is fought back under control. The aircraft's
+  // real physics velocity lives at aircraft.instance.rigidBody.v_linearVelocity,
+  // a plain [east, north, up] m/s vector in the same local ENU frame already
+  // used for weather.currentWindVector, so it can be set directly from the
+  // requested heading and true airspeed.
   W.placeAircraft = function (p, speedMps) {
     const a = window.geofs?.aircraft?.instance;
     if (!a) return false;
-    if (invokeFirst([
+    const placed = invokeFirst([
       { target: window.geofs?.api, name: 'setAircraftPosition', args: [p.latDeg, p.lonDeg, p.altitudeM, p.headingDeg, speedMps] },
       { target: a, name: 'setPosition', args: [p.latDeg, p.lonDeg, p.altitudeM, p.headingDeg, speedMps] },
-    ])) return true;
-    if (typeof a.place === 'function') {
-      a.place([p.latDeg, p.lonDeg, p.altitudeM], [p.headingDeg, 0, 0]);
-      return true;
+    ]) || (typeof a.place === 'function' && (a.place([p.latDeg, p.lonDeg, p.altitudeM], [p.headingDeg, 0, 0]), true));
+    if (!placed) return false;
+    const v = a.rigidBody?.v_linearVelocity;
+    const speed = finite(speedMps);
+    if (v && speed !== null) {
+      const h = p.headingDeg * C.DEG_TO_RAD;
+      v[0] = speed * Math.sin(h);
+      v[1] = speed * Math.cos(h);
+      v[2] = 0;
     }
-    return false;
+    return true;
   };
 
   W.commandTrim = async function (options = {}) {
@@ -207,12 +240,22 @@
     const altitudeM = altitudeFt * C.FT_TO_M;
     const tasMps = W.trimTasMps(massKg, altitudeM, cl);
     const speedKias = W.trimKias(massKg, cl);
+    if (!window.controls?.engine?.on) W.startEngines();
     if (f.altitudeFt < 2000 && options.reposition !== false && f.latDeg != null && f.lonDeg != null) {
       W.placeAircraft({ latDeg: f.latDeg, lonDeg: f.lonDeg, altitudeM, headingDeg }, tasMps);
       await new Promise((r) => window.setTimeout(r, 400));
     }
-    W.setAutopilotTargets({ headingDeg, altitudeFt, speedKias });
+    // Found via live testing against real GeoFS: geofs.autopilot.turnOn()
+    // unconditionally re-captures the CURRENT heading/altitude/speed as its
+    // own bugs (geofs.autopilot.setAltitude(currentAlt) etc.) as part of
+    // engaging, which clobbers any target set beforehand. enableAutopilot()
+    // must run first, and setAutopilotTargets() after, or the autopilot
+    // (including its throttle PID, which is a real closed-loop autothrottle)
+    // ends up holding whatever the aircraft happened to be doing at the
+    // moment it was switched on.
     W.enableAutopilot();
+    W.setAutopilotTargets({ headingDeg, altitudeFt, speedKias });
+    if (finite(options.throttle) !== null) W.setThrottle(options.throttle);
     W.state.trim = { cl, massKg, altitudeFt, headingDeg, speedKias, targetTasKt: tasMps / C.KNOT_TO_MPS };
     return W.state.trim;
   };
