@@ -106,6 +106,16 @@ geofsWake.grid.clear()
 geofsWake.stop()
 ```
 
+## Testing
+
+The coordinate transforms, grid interpolation, extremum-seeking controller, and leader/follower runtime loop are covered by an offline Node test suite that mocks the GeoFS globals (`geofs`, `weather`, `controls`, `performance`, `BroadcastChannel`). It requires Node 18+ and no other dependencies.
+
+```sh
+npm test
+```
+
+This does not replace testing in a real browser: the mocked `geofs.autopilot` API surface (`setCourse`/`setAltitude`/`setSpeed`/`turnOn`, with several documented fallbacks) is a best guess at GeoFS's real API from reading `js/wake/core.js`, and only an actual GeoFS session can confirm those calls exist and behave as assumed.
+
 ## Implementation
 
 The follower writes a dynamic east-north-up vector to `weather.currentWindVector`. GeoFS uses this vector in its native air-relative velocity and airfoil calculations. The script therefore does not replace the Boeing 777 flight model.

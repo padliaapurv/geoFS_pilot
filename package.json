@@ -1,0 +1,12 @@
+{
+  "name": "geofs-wake-sim",
+  "version": "2.0.0",
+  "private": true,
+  "description": "GeoFS Boeing 777-200 wake simulation userscript",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

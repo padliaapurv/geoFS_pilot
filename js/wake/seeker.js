@@ -21,7 +21,7 @@
       gainX: Number.isFinite(options.gainCross) ? options.gainCross : 2.0,
       gainY: Number.isFinite(options.gainVertical) ? options.gainVertical : 1.5,
       warmupSec: Number.isFinite(options.warmupSec) ? options.warmupSec : 20,
-      objectiveMean: 0,
+      objectiveMean: null,
       gradientX: 0,
       gradientY: 0,
       objective: null,
@@ -52,6 +52,7 @@
     const sx = Math.sin(s.omegaX * elapsed);
     const sy = Math.sin(s.omegaY * elapsed + s.phaseY);
 
+    if (s.objectiveMean === null) s.objectiveMean = objective;
     const meanAlpha = 1 - Math.exp(-dt / 20);
     s.objectiveMean += meanAlpha * (objective - s.objectiveMean);
     const hp = objective - s.objectiveMean;
