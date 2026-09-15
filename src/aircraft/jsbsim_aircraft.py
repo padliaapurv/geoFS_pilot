@@ -27,10 +27,11 @@ GRAVITY_M_S2 = 9.80665
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 JSBSIM_AIRCRAFT_PATH = os.path.join(REPO_ROOT, "jsbsim_models", "aircraft")
 JSBSIM_ENGINE_PATH = os.path.join(REPO_ROOT, "jsbsim_models", "engine")
+FLIGHTGEAR_OUTPUT_DIRECTIVE = os.path.join(REPO_ROOT, "jsbsim_models", "output", "flightgear_udp.xml")
 
 
 class JSBSimAircraft:
-    def __init__(self, config: dict, model_name: str = "777-200"):
+    def __init__(self, config: dict, model_name: str = "777-200", flightgear_output: bool = False):
         self.config = config
         surf = config["control_surfaces"]
         self._limits_rad = {
@@ -43,6 +44,9 @@ class JSBSimAircraft:
         self.fdm = jsbsim.FGFDMExec(root_dir=REPO_ROOT)
         self.fdm.set_aircraft_path(JSBSIM_AIRCRAFT_PATH)
         self.fdm.set_engine_path(JSBSIM_ENGINE_PATH)
+        if flightgear_output:
+            # Must be set before load_model() per JSBSim's own docs.
+            self.fdm.set_output_directive(FLIGHTGEAR_OUTPUT_DIRECTIVE)
         if not self.fdm.load_model(model_name):
             raise RuntimeError(f"JSBSim failed to load aircraft model '{model_name}'")
         # Engines default to off (set-running=0); run_ic() alone does not
@@ -54,7 +58,14 @@ class JSBSimAircraft:
         self._origin_ned_m = np.zeros(3)
         self.state: AircraftState = None
 
-    def trim_at(self, altitude_m: float, target_cl: float, position_ned_m: np.ndarray, heading_rad: float) -> None:
+    def trim_at(
+        self, altitude_m: float, target_cl: float, position_ned_m: np.ndarray, heading_rad: float,
+        start_lat_deg: float = 0.0, start_lon_deg: float = 0.0,
+    ) -> None:
+        # start_lat/lon only matter for visualization (e.g. FlightGear
+        # rendering real terrain under the aircraft) -- our own dynamics and
+        # guidance stay entirely in the flat-NED frame regardless of where
+        # on the globe that origin sits.
         atmosphere = isa_atmosphere(altitude_m)
         mass_kg = self.config["mass"]["mass_kg"]
         wing_area_m2 = self.config["geometry"]["wing_area_m2"]
@@ -62,6 +73,8 @@ class JSBSimAircraft:
 
         self._origin_ned_m = np.asarray(position_ned_m, dtype=float).copy()
 
+        self.fdm["ic/lat-gc-deg"] = start_lat_deg
+        self.fdm["ic/long-gc-deg"] = start_lon_deg
         self.fdm["ic/h-sl-ft"] = altitude_m * M_TO_FT
         self.fdm["ic/vt-fps"] = airspeed_m_s * M_TO_FT
         self.fdm["ic/gamma-deg"] = 0.0
