@@ -36,8 +36,8 @@ guidance:
   autopilot_gains:
     roll:
       kp: 0.5
-      ki: 0.01
-      kd: 0.20
+      ki: 0.0
+      kd: 3.0
     pitch:
       # Inner loop: elevator (rad) per (rad pitch-attitude error) / per
       # (rad/s pitch rate). See climb_rate_to_pitch below for the outer loop.
@@ -48,7 +48,7 @@ guidance:
       ki: 0.0
       kd: 0.3
     yaw_damper:
-      kp: 0.6
+      kp: 1.5
     speed:
       kp: 0.01
       ki: 0.0

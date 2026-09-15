@@ -11,6 +11,7 @@
 import argparse
 import logging
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -33,6 +34,23 @@ FGFS_EXE = r"C:\Program Files\FlightGear 2020.3\bin\fgfs.exe"
 FG_ROOT = r"C:\Program Files\FlightGear 2020.3\data"
 NATIVE_FDM_PORT = 5550
 NATIVE_FDM_RATE_HZ = 30
+TELNET_PORT = 5501
+
+# Freeware 777 model from the official FGAddon aircraft hangar (requires
+# only FlightGear >=2020.3.12, unlike some newer community 777 models that
+# need 2024.x+ and silently fail to load here), installed outside
+# FG_ROOT/data/Aircraft (which isn't writable without admin) and added to
+# FlightGear's aircraft search path via --fg-aircraft instead. Visual only,
+# same as the previous c172p stand-in -- our own JSBSim/Navigator/Autopilot
+# code still owns all the actual physics/guidance.
+FG_AIRCRAFT_DIR = r"C:\Users\padli\FlightGear_Aircraft"
+FG_AIRCRAFT_ID = "777-200"
+
+# Chase View -- see $FG_ROOT/data/defaults.xml's default <view> ordering
+# (0=Cockpit, 1=Helicopter, 2=Chase); set after startup over the telnet
+# props interface since properties passed on the command line get reset
+# once the view manager finishes initializing.
+CHASE_VIEW_NUMBER = 2
 
 # Bay Area coordinates purely for a nicer FlightGear starting view; our own
 # dynamics/guidance run entirely in the flat-NED frame regardless.
@@ -49,9 +67,11 @@ def launch_flightgear(altitude_m: float, heading_deg: float, airspeed_m_s: float
     args = [
         FGFS_EXE,
         f"--fg-root={FG_ROOT}",
-        "--aircraft=c172p",  # visual model only; JSBSim/our sim owns the actual flight dynamics
+        f"--fg-aircraft={FG_AIRCRAFT_DIR}",
+        f"--aircraft={FG_AIRCRAFT_ID}",  # visual model only; JSBSim/our sim owns the actual flight dynamics
         "--fdm=external",
         f"--native-fdm=socket,in,{NATIVE_FDM_RATE_HZ},,{NATIVE_FDM_PORT},udp",
+        f"--telnet={TELNET_PORT}",
         f"--lat={START_LAT_DEG}",
         f"--lon={START_LON_DEG}",
         f"--altitude={altitude_m * 3.280839895:.0f}",
@@ -65,6 +85,28 @@ def launch_flightgear(altitude_m: float, heading_deg: float, airspeed_m_s: float
     ]
     logger.info("Launching FlightGear: %s", " ".join(args))
     return subprocess.Popen(args)
+
+
+def set_chase_view(timeout_s: float = 90.0) -> None:
+    # Command-line --prop: values for view state get clobbered once
+    # FlightGear's view manager finishes its own init, so this has to be
+    # set after startup, over the props/telnet interface instead. The
+    # telnet server itself only comes up once FlightGear finishes loading
+    # the aircraft model/textures -- slow and hard to bound for a heavy
+    # payware-grade model like the 777, so retry rather than fixed-wait.
+    deadline = time.time() + timeout_s
+    last_exc = None
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("localhost", TELNET_PORT), timeout=5.0) as sock:
+                sock.sendall(f"set /sim/current-view/view-number {CHASE_VIEW_NUMBER}\r\n".encode("ascii"))
+                sock.recv(4096)
+            logger.info("Switched FlightGear to chase view (view-number=%d)", CHASE_VIEW_NUMBER)
+            return
+        except OSError as exc:
+            last_exc = exc
+            time.sleep(2.0)
+    logger.warning("Could not set chase view over telnet after %.0fs: %s", timeout_s, last_exc)
 
 
 def main():
@@ -99,6 +141,7 @@ def main():
         )
         logger.info("Waiting for FlightGear to start up...")
         time.sleep(20.0)
+        set_chase_view()
     else:
         logger.info("Assuming FlightGear is already running and listening on port %d", NATIVE_FDM_PORT)
 
