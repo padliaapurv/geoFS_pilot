@@ -57,6 +57,11 @@ CHASE_VIEW_NUMBER = 2
 START_LAT_DEG = 37.6189
 START_LON_DEG = -122.3750
 
+# Placement-only defaults for "native" mode (see config/simulation.yaml's
+# flightgear.dynamics) -- FlightGear's own FDM takes over from here, so
+# these don't need to match the "external" mode's trimmed values exactly.
+NATIVE_MODE_VC_KT = 280.0
+
 
 def load_yaml(path: str) -> dict:
     with open(path, "r") as f:
@@ -87,6 +92,31 @@ def launch_flightgear(altitude_m: float, heading_deg: float, airspeed_m_s: float
     return subprocess.Popen(args)
 
 
+def launch_flightgear_native(altitude_m: float, heading_deg: float) -> subprocess.Popen:
+    # No --fdm=external, no --native-fdm: FlightGear flies the installed
+    # 777-200 with its own bundled FDM/autopilot, entirely independent of
+    # our JSBSim/Navigator/Autopilot stack.
+    args = [
+        FGFS_EXE,
+        f"--fg-root={FG_ROOT}",
+        f"--fg-aircraft={FG_AIRCRAFT_DIR}",
+        f"--aircraft={FG_AIRCRAFT_ID}",
+        f"--telnet={TELNET_PORT}",
+        f"--lat={START_LAT_DEG}",
+        f"--lon={START_LON_DEG}",
+        f"--altitude={altitude_m * 3.280839895:.0f}",
+        f"--heading={heading_deg:.0f}",
+        f"--vc={NATIVE_MODE_VC_KT:.0f}",
+        "--disable-ai-traffic",
+        "--disable-real-weather-fetch",
+        "--disable-terrasync",
+        "--disable-random-objects",
+        "--timeofday=noon",
+    ]
+    logger.info("Launching FlightGear (native dynamics): %s", " ".join(args))
+    return subprocess.Popen(args)
+
+
 def set_chase_view(timeout_s: float = 90.0) -> None:
     # Command-line --prop: values for view state get clobbered once
     # FlightGear's view manager finishes its own init, so this has to be
@@ -109,6 +139,31 @@ def set_chase_view(timeout_s: float = 90.0) -> None:
     logger.warning("Could not set chase view over telnet after %.0fs: %s", timeout_s, last_exc)
 
 
+def run_native(trim_cfg: dict, args) -> None:
+    # flightgear.dynamics == "native": FlightGear flies itself, using the
+    # installed 777-200's own FDM/autopilot. No JSBSim, no Navigator/
+    # Autopilot, no UDP streaming -- this whole mode is just "launch
+    # FlightGear and let it run," kept separate from the "external" path
+    # above so that path stays untouched.
+    fg_process = None
+    if not args.no_launch:
+        fg_process = launch_flightgear_native(
+            altitude_m=trim_cfg["cruise_altitude_m"], heading_deg=trim_cfg["initial_heading_deg"],
+        )
+        logger.info("Waiting for FlightGear to start up...")
+        time.sleep(20.0)
+        set_chase_view()
+    else:
+        logger.info("Assuming FlightGear is already running (native dynamics)")
+
+    logger.info("FlightGear is flying itself for %.0fs (native dynamics) ...", args.duration_s)
+    time.sleep(args.duration_s)
+
+    logger.info("Done. FlightGear window stays open; close it manually when finished.")
+    if fg_process is not None:
+        logger.info("(FlightGear PID: %d)", fg_process.pid)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run the B777-200 guidance simulation live in FlightGear")
     parser.add_argument("--config", default="config/simulation.yaml")
@@ -117,11 +172,19 @@ def main():
     args = parser.parse_args()
 
     sim_config = load_yaml(args.config)
+    setup_logging(sim_config["logging"])
+    trim_cfg = sim_config["trim"]
+
+    dynamics_mode = sim_config.get("flightgear", {}).get("dynamics", "external")
+    if dynamics_mode == "native":
+        run_native(trim_cfg, args)
+        return
+    elif dynamics_mode != "external":
+        raise ValueError(f"Unknown flightgear.dynamics mode: {dynamics_mode!r} (expected 'external' or 'native')")
+
     aircraft_config = load_yaml(sim_config["aircraft_config"])
     wake_config = load_yaml(sim_config["wake_config"])
-    setup_logging(sim_config["logging"])
 
-    trim_cfg = sim_config["trim"]
     aircraft = JSBSimAircraft(aircraft_config, flightgear_output=True)
     aircraft.trim_at(
         altitude_m=trim_cfg["cruise_altitude_m"],

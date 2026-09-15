@@ -8,6 +8,18 @@ wake_config: "config/wake.yaml"
 #            (src/aircraft/jsbsim_aircraft.py, jsbsim_models/aircraft/777-200)
 dynamics_backend: "jsbsim"
 
+# Only used by scripts/run_sim_flightgear.py.
+# "external" (default) = our own JSBSim + Navigator/Autopilot drive the
+#            flight; FlightGear just renders the puppeted 777-200 model
+#            (--fdm=external, native-fdm UDP stream). This is the mode
+#            everything above (dynamics_backend, guidance, autopilot_gains)
+#            applies to -- don't break this one.
+# "native"  = skip our sim entirely and let FlightGear fly its own
+#            installed 777-200 with its own bundled FDM/autopilot instead.
+#            Useful as an independent reference to compare our sim against.
+flightgear:
+  dynamics: "external"
+
 trim:
   cruise_altitude_m: 10668.0   # FL350
   target_cl: 0.5
