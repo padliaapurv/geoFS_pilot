@@ -56,14 +56,7 @@ class Simulation:
         alpha = float(np.arctan2(w, u)) if airspeed > 1e-3 else 0.0
         beta = float(np.arctan2(v, np.hypot(u, w))) if airspeed > 1e-3 else 0.0
 
-        # CL/CD depend only on alpha/controls/rates, not on dynamic pressure,
-        # so an approximate sea-level dynamic pressure is fine for telemetry.
-        dynamic_pressure = 0.5 * 1.225 * airspeed ** 2
-        aero = self.aircraft.aero_model.compute(
-            alpha_rad=alpha, beta_rad=beta,
-            p_rad_s=state.angular_rate_body_rad_s[0], q_rad_s=state.angular_rate_body_rad_s[1], r_rad_s=state.angular_rate_body_rad_s[2],
-            controls=state.controls, airspeed_m_s=airspeed, dynamic_pressure_pa=dynamic_pressure,
-        )
+        cl, cd = self.aircraft.get_cl_cd(self.wind_field)
 
         return TelemetryRow(
             t_s=state.t_s,
@@ -79,8 +72,8 @@ class Simulation:
             p_deg_s=np.degrees(state.angular_rate_body_rad_s[0]),
             q_deg_s=np.degrees(state.angular_rate_body_rad_s[1]),
             r_deg_s=np.degrees(state.angular_rate_body_rad_s[2]),
-            cl=aero.cl,
-            cd=aero.cd,
+            cl=cl,
+            cd=cd,
             aileron_deg=np.degrees(state.controls.aileron_rad),
             elevator_deg=np.degrees(state.controls.elevator_rad),
             rudder_deg=np.degrees(state.controls.rudder_rad),

@@ -57,6 +57,26 @@ class Aircraft:
         u, v, w = self.state.velocity_body_m_s
         return float(np.arctan2(v, np.hypot(u, w)))
 
+    def get_cl_cd(self, wind_field) -> tuple:
+        # Telemetry/plotting convenience: CL/CD don't depend on dynamic
+        # pressure (see aerodynamics.compute), so an approximate sea-level
+        # qbar is fine here even though step() uses the exact altitude qbar.
+        state = self.state
+        wind_ned = wind_field.wind_ned(*state.position_ned_m, state.t_s)
+        wind_body = state.attitude_dcm.T @ wind_ned
+        airflow_body = state.velocity_body_m_s - wind_body
+        airspeed = float(np.linalg.norm(airflow_body))
+        u, v, w = airflow_body
+        alpha = float(np.arctan2(w, u)) if airspeed > 1e-3 else 0.0
+        beta = float(np.arctan2(v, np.hypot(u, w))) if airspeed > 1e-3 else 0.0
+        dynamic_pressure = 0.5 * 1.225 * airspeed ** 2
+        aero = self.aero_model.compute(
+            alpha_rad=alpha, beta_rad=beta,
+            p_rad_s=state.angular_rate_body_rad_s[0], q_rad_s=state.angular_rate_body_rad_s[1], r_rad_s=state.angular_rate_body_rad_s[2],
+            controls=state.controls, airspeed_m_s=airspeed, dynamic_pressure_pa=dynamic_pressure,
+        )
+        return aero.cl, aero.cd
+
     def step(self, command: ControlSurfaceCommand, wind_field, dt: float) -> AircraftState:
         self.state.controls = self.actuator_model.step(self.state.controls, command, dt)
 

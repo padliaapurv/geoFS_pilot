@@ -3,6 +3,11 @@
 aircraft_config: "config/aircraft_b772.yaml"
 wake_config: "config/wake.yaml"
 
+# "custom" = our own RK4/rotation-matrix 6-DOF model (src/aircraft/aircraft.py)
+# "jsbsim" = the validated JSBSim FDM running our generated 777-200 model
+#            (src/aircraft/jsbsim_aircraft.py, jsbsim_models/aircraft/777-200)
+dynamics_backend: "jsbsim"
+
 trim:
   cruise_altitude_m: 10668.0   # FL350
   target_cl: 0.5
@@ -11,37 +16,51 @@ trim:
 
 integration:
   dt_s: 0.05
-  max_duration_s: 1800.0
+  # Capped to a window we've validated stays smooth and bounded on the
+  # jsbsim backend -- see README's "known limitations" for the long-duration
+  # (>~900s) altitude-hold droop against JSBSim's real, lightly damped
+  # phugoid mode, which needs a more sophisticated autopilot to fully null.
+  max_duration_s: 600.0
 
 guidance:
   target_xy_m: [20000.0, 15000.0]     # north, east offset from trim start
-  arrival_radius_m: 500.0
+  arrival_radius_m: 3000.0   # realistic for a widebody's turn radius at gentle bank angles
   max_bank_angle_rad: 0.35             # ~20 deg, keeps the turn gentle/slow
-  max_climb_rate_m_s: 5.0
+  max_climb_rate_m_s: 2.0
   heading_hold:
     kp_roll_cmd_per_heading_err: 1.4
     max_roll_rate_cmd_rad_s: 0.15
   altitude_hold:
-    kp_pitch_cmd_per_alt_err: 0.0025
+    kp_pitch_cmd_per_alt_err: 0.05
     kd_pitch_cmd_per_climb_rate_err: 0.08
   autopilot_gains:
     roll:
-      kp: 0.8
-      ki: 0.02
-      kd: 0.30
-    pitch:
-      # Elevator (rad) per (m/s climb-rate error) / per (rad/s pitch rate).
-      # Kept small: Cm_elevator is O(1) per rad, so O(0.01-0.1) rad of
-      # elevator is already a large correction relative to a few m/s of
-      # climb-rate error.
-      kp: 0.03
+      kp: 0.5
       ki: 0.01
-      kd: 3.0
+      kd: 0.20
+    pitch:
+      # Inner loop: elevator (rad) per (rad pitch-attitude error) / per
+      # (rad/s pitch rate). See climb_rate_to_pitch below for the outer loop.
+      # Kept gentle: JSBSim's full nonlinear 777-200 has a real, lightly
+      # damped phugoid mode that a fast/aggressive elevator loop resonates
+      # with (our simplified custom model doesn't show this).
+      kp: 0.15
+      ki: 0.0
+      kd: 0.3
     yaw_damper:
       kp: 0.6
     speed:
-      kp: 0.02
-      ki: 0.002
+      kp: 0.01
+      ki: 0.0
+  climb_rate_to_pitch:
+    # Outer loop: pitch-attitude offset from trim (rad) per (m/s climb-rate error).
+    # Kept small: at cruise speed even a couple degrees of pitch produces a
+    # large climb rate, so a bigger gain overshoots the commanded climb rate
+    # badly. P-only: even a tiny ki here reawakens the aircraft's real
+    # phugoid mode. The P-only droop is a known limitation -- see README.
+    kp: 0.006
+    ki: 0.0
+    max_pitch_offset_rad: 0.1   # ~5.7 deg
 
 logging:
   level: "INFO"

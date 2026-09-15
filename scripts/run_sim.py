@@ -12,9 +12,11 @@ import yaml
 import numpy as np
 
 from src.aircraft.aircraft import Aircraft
+from src.aircraft.jsbsim_aircraft import JSBSimAircraft
 from src.atmosphere.factory import build_wind_field
 from src.guidance.navigator import Navigator
 from src.guidance.autopilot import Autopilot
+from src.aircraft.geometry import euler_from_dcm
 from src.sim.simulation import Simulation
 from src.sim.logger import setup_logging, TelemetryLogger
 from src.viz.plots import plot_all
@@ -41,7 +43,12 @@ def main():
     setup_logging(sim_config["logging"])
     logger.info("Loaded configs: aircraft=%s wake_type=%s", aircraft_config["name"], wake_config.get("type"))
 
-    aircraft = Aircraft(aircraft_config)
+    backend = sim_config.get("dynamics_backend", "custom")
+    if backend == "jsbsim":
+        aircraft = JSBSimAircraft(aircraft_config)
+    else:
+        aircraft = Aircraft(aircraft_config)
+    logger.info("Dynamics backend: %s", backend)
     trim_cfg = sim_config["trim"]
     aircraft.trim_at(
         altitude_m=trim_cfg["cruise_altitude_m"],
@@ -57,10 +64,12 @@ def main():
         cruise_altitude_m=trim_cfg["cruise_altitude_m"],
         cruise_airspeed_m_s=aircraft.airspeed_m_s,
     )
+    _, trim_pitch_attitude_rad, _ = euler_from_dcm(aircraft.state.attitude_dcm)
     autopilot = Autopilot(
         sim_config["guidance"],
         trim_elevator_trim_rad=aircraft.state.controls.elevator_trim_rad,
         trim_throttle_fraction=aircraft.state.controls.throttle_fraction,
+        trim_pitch_attitude_rad=trim_pitch_attitude_rad,
     )
 
     telemetry = TelemetryLogger(

@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<!-- Thrust is computed directly by the engine (no separate propeller/fan thruster model needed for a turbofan). -->
+<direct name="Direct">
+</direct>
