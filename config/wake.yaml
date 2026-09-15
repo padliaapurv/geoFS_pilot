@@ -1,0 +1,19 @@
+# Wind / wake field configuration. `type: zero` gives a still-air atmosphere
+# (default). Switch to `type: lamb_oseen_pair` to inject a trailing-vortex
+# wake behind a lead aircraft of the same type, for minimum-seeking studies.
+
+type: "zero"
+
+lamb_oseen_pair:
+  # Lead aircraft assumed flying a straight, constant-velocity track (here,
+  # due north, so "north" doubles as the along-track coordinate used by the
+  # wake cross-section visualization script).
+  lead_start_position_ned_m: [-5000.0, 0.0, -10668.0]
+  lead_velocity_ned_m_s: [235.0, 0.0, 0.0]   # ~cruise TAS, heading north
+  lead_wing_span_m: 60.9
+  lead_mass_kg: 230000.0
+  # Vortex core (viscous) radius, grows slowly with vortex age.
+  core_radius0_m: 4.0
+  core_growth_m2_s: 0.30
+  # Simple empirical circulation decay time constant (age-based).
+  circulation_decay_s: 180.0

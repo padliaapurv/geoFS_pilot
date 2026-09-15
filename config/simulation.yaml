@@ -1,0 +1,50 @@
+# Simulation, trim target, and guidance run configuration.
+
+aircraft_config: "config/aircraft_b772.yaml"
+wake_config: "config/wake.yaml"
+
+trim:
+  cruise_altitude_m: 10668.0   # FL350
+  target_cl: 0.5
+  initial_heading_deg: 90.0    # due east, used only to build the initial DCM
+  initial_position_ned_m: [0.0, 0.0, -10668.0]  # down = -altitude
+
+integration:
+  dt_s: 0.05
+  max_duration_s: 1800.0
+
+guidance:
+  target_xy_m: [20000.0, 15000.0]     # north, east offset from trim start
+  arrival_radius_m: 500.0
+  max_bank_angle_rad: 0.35             # ~20 deg, keeps the turn gentle/slow
+  max_climb_rate_m_s: 5.0
+  heading_hold:
+    kp_roll_cmd_per_heading_err: 1.4
+    max_roll_rate_cmd_rad_s: 0.15
+  altitude_hold:
+    kp_pitch_cmd_per_alt_err: 0.0025
+    kd_pitch_cmd_per_climb_rate_err: 0.08
+  autopilot_gains:
+    roll:
+      kp: 0.8
+      ki: 0.02
+      kd: 0.30
+    pitch:
+      # Elevator (rad) per (m/s climb-rate error) / per (rad/s pitch rate).
+      # Kept small: Cm_elevator is O(1) per rad, so O(0.01-0.1) rad of
+      # elevator is already a large correction relative to a few m/s of
+      # climb-rate error.
+      kp: 0.03
+      ki: 0.01
+      kd: 3.0
+    yaw_damper:
+      kp: 0.6
+    speed:
+      kp: 0.02
+      ki: 0.002
+
+logging:
+  level: "INFO"
+  log_file: "logs/simulation.log"
+  telemetry_csv: "logs/telemetry.csv"
+  telemetry_stride: 1     # log every Nth integration step

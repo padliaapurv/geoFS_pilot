@@ -1,14 +1,13 @@
-# Node
-node_modules/
-npm-debug.log*
-dist/
-coverage/
-
 # Python
 __pycache__/
 *.pyc
 .venv/
 venv/
+*.egg-info/
+
+# Simulation outputs
+output/
+logs/
 
 # Editor / OS
 .vscode/

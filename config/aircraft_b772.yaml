@@ -1,0 +1,95 @@
+# Boeing 777-200 approximate mass, geometry, and aerodynamic data.
+# Values are engineering-grade public estimates assembled from open literature
+# (Jane's, Boeing airport planning docs, generic transport-aircraft stability
+# derivative tables such as Roskam/NASA TN reports). They are NOT certified
+# flight-test data and should not be used for anything beyond simulation and
+# controls research.
+
+name: "Boeing 777-200"
+
+mass:
+  # Mid-cruise gross weight (typical, roughly mid-range mission).
+  mass_kg: 230000.0
+  # Inertia tensor about body axes, CG-referenced, approximate for this weight.
+  # Off-diagonal terms other than Ixz are assumed negligible (symmetric aircraft).
+  inertia_kg_m2:
+    Ixx: 24700000.0
+    Iyy: 44900000.0
+    Izz: 67500000.0
+    Ixz: 1300000.0
+
+geometry:
+  wing_area_m2: 427.8
+  wing_span_m: 60.9
+  mean_aero_chord_m: 7.0
+
+aerodynamics:
+  # Linear stability-derivative model, valid near cruise trim (small
+  # perturbation). alpha/beta/rates in radians and rad/s.
+  reference:
+    alpha0_rad: 0.0          # zero-lift AoA reference used by CL0 below
+  lift:
+    CL0: 0.25                # CL at alpha = 0, flaps up
+    CL_alpha: 5.7             # per rad
+    CL_elevator: 0.36         # per rad of elevator deflection
+    CL_elevator_trim: 0.20     # trim tab, smaller lever arm/area than main elevator
+    CL_q: 6.5                 # per rad/s * (mac / (2V)) applied inside model
+  drag:
+    CD0: 0.0195
+    # Induced drag via CD = CD0 + k * CL^2 (parabolic polar)
+    oswald_efficiency: 0.82
+  pitch_moment:
+    Cm0: 0.02
+    Cm_alpha: -1.45            # static longitudinal stability, per rad
+    Cm_elevator: -1.35          # per rad elevator
+    Cm_elevator_trim: -1.35     # trim tab modeled with same effectiveness
+    Cm_q: -22.0                 # per rad/s * (mac / (2V))
+  side_force:
+    CY_beta: -0.90
+    CY_rudder: 0.19
+  roll_moment:
+    Cl_beta: -0.095
+    Cl_p: -0.42                 # roll damping, per rad/s * (b / (2V))
+    Cl_r: 0.12                  # per rad/s * (b / (2V))
+    Cl_aileron: 0.055
+    Cl_rudder: 0.010
+  yaw_moment:
+    Cn_beta: 0.16
+    Cn_p: -0.02
+    Cn_r: -0.28                 # yaw damping, per rad/s * (b / (2V))
+    Cn_aileron: -0.006
+    Cn_rudder: -0.095
+
+control_surfaces:
+  # Deflection limits and actuator rates for each surface.
+  aileron:
+    limit_rad: 0.35
+    rate_limit_rad_s: 1.05
+    time_constant_s: 0.15
+  elevator:
+    limit_rad: 0.45
+    rate_limit_rad_s: 0.70
+    time_constant_s: 0.20
+  rudder:
+    limit_rad: 0.45
+    rate_limit_rad_s: 0.70
+    time_constant_s: 0.25
+  elevator_trim:
+    limit_rad: 0.25
+    rate_limit_rad_s: 0.05
+    time_constant_s: 1.0
+  throttle:
+    limit_fraction: 1.0
+    rate_limit_fraction_s: 0.30
+    time_constant_s: 1.5
+
+propulsion:
+  # Two GE90-class turbofans, thrust aligned with body x-axis at engine
+  # mount height (assumed on the body x-axis, i.e. no pitch/yaw offset moment
+  # for this simplified model).
+  num_engines: 2
+  max_sea_level_thrust_per_engine_n: 420000.0
+  # Simple thrust lapse with density ratio (sigma) and a mild Mach falloff,
+  # thrust_available = max_sl_thrust * sigma^0.7 * (1 - 0.25 * mach)
+  thrust_density_exponent: 0.7
+  thrust_mach_falloff: 0.25

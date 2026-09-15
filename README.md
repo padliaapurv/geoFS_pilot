@@ -1,123 +1,122 @@
-# GeoFS Boeing 777-200 wake simulation
+# geoFS Pilot — B777-200 cruise dynamics, guidance, and wake sandbox
 
-This repository uses the native GeoFS Boeing 777-200 flight model to test wake following and peak seeking.
+A from-scratch Python flight-dynamics sandbox: a 6-DOF Boeing 777-200 model
+trimmed for cruise, a pluggable atmosphere/wake model, and a high-level
+guidance layer that flies the aircraft to a target (x, y). Built as four
+independent modules with narrow API boundaries so any one of them — the
+aircraft, the wake, the guidance — can be swapped for a higher-fidelity
+implementation later, in particular to support minimum-seeking control
+against an induced wake from another aircraft of the same type.
 
-The current system has:
+## Design choices
 
-- Boeing 777-200 trim at `CL = 0.5`
-- two GeoFS tabs: leader and follower
-- leader-to-follower state transfer with browser `BroadcastChannel`
-- a local 3-D wake velocity input
-- a loadable 2-D wake grid
-- a temporary moving vortex/wake model
-- fixed-point, truth-tracking, and peak-seeking modes
-- run history and CSV output
+- **No Euler angles in the state or dynamics.** Attitude is a 3x3 direction
+  cosine matrix (`Aircraft.state.attitude_dcm`), propagated with the
+  rotation-matrix exponential map (`aircraft/geometry.py:integrate_dcm`),
+  which is exact and free of gimbal lock. Euler angles only ever appear as a
+  derived scalar (`euler_from_dcm`) for human-readable logs/plots and for
+  autopilot loop feedback (e.g. bank-angle hold) — never as propagated state.
+- **YAML config everywhere.** Aircraft mass/geometry/aero/actuator data
+  (`config/aircraft_b772.yaml`), the wake model (`config/wake.yaml`), and the
+  run/guidance/logging setup (`config/simulation.yaml`) are all data, not
+  code.
+- **Independent modules, explicit contracts:**
+  - `Aircraft.step(control_command, wind_field, dt) -> AircraftState`
+  - `WindField.wind_ned(x, y, z, t) -> np.ndarray([Vn, Ve, Vd])`
+  - `Navigator.compute(state) -> GuidanceCommand`
+  - `Autopilot.compute_control(state, guidance_command, dt) -> ControlSurfaceCommand`
+  
+  Any of these can be replaced by a drop-in implementation of the same
+  contract (e.g. a CFD-backed `WindField`, an RL-based `Autopilot`, an
+  online-optimization `Navigator` for wake minimum-seeking) without touching
+  the rest of the stack.
 
-No Node server is required.
+## Layout
 
-## Install
-
-Install `js/geofs_wake_sim.user.js` in Tampermonkey.
-
-Open two GeoFS tabs. Select the Boeing 777-200 in both tabs.
-
-## 1. Start the leader
-
-In the first tab:
-
-```js
-geofsWake.startLeader({
-  cl: 0.5,
-  altitudeFt: 10000,
-  headingDeg: 90,
-  massKg: 200000,
-})
+```
+config/
+  aircraft_b772.yaml   # mass, geometry, aero derivatives, actuator limits, engine
+  wake.yaml            # wind/wake field selection + params (default: zero wind)
+  simulation.yaml       # trim target, integration, guidance gains, logging
+src/
+  aircraft/
+    geometry.py         # DCM/rotation-matrix utilities (skew, exp-map integration)
+    state.py            # AircraftState, ControlSurfaceState/Command dataclasses
+    aerodynamics.py      # linear stability-derivative aero model
+    propulsion.py         # thrust model with density/Mach lapse
+    control_surfaces.py    # actuator rate/position-limited first-order lag
+    dynamics.py             # 6-DOF equations of motion + RK4 integrator
+    trim.py                  # closed-form cruise trim solver (CL, alpha, elevator trim, throttle)
+    aircraft.py               # top-level Aircraft API composing the above
+  atmosphere/
+    isa.py               # ISA 1976 standard atmosphere
+    wind_field.py          # WindField ABC, ZeroWind, LambOseenVortexPairWake
+    factory.py              # builds a WindField from wake.yaml
+  guidance/
+    commands.py           # GuidanceCommand dataclass (the Navigator/Autopilot contract)
+    pid.py                  # PID with derivative-on-measurement + anti-windup
+    autopilot.py             # inner loop: bank/climb-rate/airspeed -> control surfaces
+    navigator.py              # outer loop: go-to-(x, y) -> GuidanceCommand
+  sim/
+    simulation.py         # wires Aircraft + WindField + Navigator + Autopilot, runs the loop
+    logger.py               # human log setup + per-step CSV telemetry
+  viz/
+    plots.py               # trajectory / altitude / attitude / controls / CL-CD plots
+    wake_field.py            # wake cross-section quiver plot, independent of any aircraft run
+scripts/
+  run_sim.py             # entry point: trim, run to waypoint, save plots + telemetry
+tests/                   # geometry, ISA, and trim/force-balance unit tests
 ```
 
-The leader holds the `CL = 0.5` trim KIAS, altitude, and heading.
+## Running it
 
-## 2. Start the follower
-
-In the second tab:
-
-```js
-geofsWake.startFollower({
-  cl: 0.5,
-  massKg: 200000,
-  targetDownstreamM: 300,
-  initialCrossM: 0,
-  initialVerticalM: 0,
-  mode: 'seek',
-})
+```bash
+pip install -r requirements.txt
+python scripts/run_sim.py
 ```
 
-The follower is placed approximately 300 m behind the leader. It receives leader state, evaluates the wake at its current relative position, and injects that wake into the GeoFS wind input.
+This trims the 777-200 at FL350, CL = 0.5, then commands it to a waypoint
+20 km north / 15 km east of the start. Plots land in `output/`, telemetry in
+`logs/telemetry.csv`, and the human-readable run log in `logs/simulation.log`.
 
-## Load your wake grid
+To try the wake: set `type: "lamb_oseen_pair"` in `config/wake.yaml` (a
+counter-rotating trailing-vortex pair behind a lead 777-200 flying a
+straight track) and rerun — a wake cross-section plot is added to `output/`.
 
-Load the grid in the follower tab before `startFollower()`:
+Run the tests with:
 
-```js
-geofsWake.grid.load({
-  xM,             // lateral coordinates, m; positive right
-  yM,             // vertical coordinates, m; positive up
-  uMps,           // forward physical air-mass velocity, [y][x]
-  vMps,           // lateral physical air-mass velocity, [y][x]
-  wMps,           // vertical physical air-mass velocity, [y][x]
-  ideal: { xM: 25, yM: 5 }, // optional; used only for truth/debug
-})
+```bash
+pytest tests/ -v
 ```
 
-If the grid only has cross-plane velocity:
+## Trim
 
-```js
-geofsWake.grid.load({ xM, yM, vxMps, vyMps })
-```
+`aircraft/trim.py` solves cruise trim in closed form: given altitude and a
+target CL, it gets airspeed from `CL = 2W / (rho S V^2)`, then solves the 2x2
+linear system for angle of attack and elevator-trim deflection that
+simultaneously hits the target CL and zeroes the pitching moment (main
+elevator held at zero, reserved for maneuvering), and finally solves throttle
+to balance thrust against the resulting drag. The initial attitude DCM is
+built by rotating the wings-level heading frame up by exactly alpha, which is
+the condition for a purely horizontal (zero flight-path-angle) NED velocity —
+verified in `tests/test_trim.py`.
 
-This maps `vxMps -> vMps`, `vyMps -> wMps`, and sets `uMps = 0`.
+## Data caveats
 
-The sampler uses bilinear interpolation. See `docs/DESIGN.md` for sign conventions and optional downstream settings.
+The aerodynamic/mass/actuator numbers in `config/aircraft_b772.yaml` are
+engineering-grade public estimates for the 777-200 (Boeing airport-planning
+data, generic transport stability-derivative tables), not certified
+flight-test data. They're accurate enough to produce believable cruise
+trim and closed-loop dynamics, not for anything safety-critical.
 
-## Modes
+## Roadmap: wake minimum-seeking
 
-Use one of these modes:
-
-```js
-geofsWake.guidance.setMode('hold')
-geofsWake.guidance.setMode('truth')
-geofsWake.guidance.setMode('seek')
-```
-
-`hold` keeps a fixed lateral/vertical point. Use it to validate wake injection first.
-
-`truth` follows the known temporary/grid ideal point. Use it to validate formation guidance.
-
-`seek` does not command the known ideal point. It dithers lateral and vertical position and moves the dither center using the measured follower objective. The placeholder objective rewards lower throttle while the aircraft holds speed and altitude.
-
-## Useful commands
-
-```js
-geofsWake.status()
-geofsWake.guidance.hold(20, 5)
-geofsWake.data.history()
-geofsWake.data.csv()
-geofsWake.grid.example()
-geofsWake.grid.clear()
-geofsWake.stop()
-```
-
-## Testing
-
-The coordinate transforms, grid interpolation, extremum-seeking controller, and leader/follower runtime loop are covered by an offline Node test suite that mocks the GeoFS globals (`geofs`, `weather`, `controls`, `performance`, `BroadcastChannel`). It requires Node 18+ and no other dependencies.
-
-```sh
-npm test
-```
-
-This does not replace testing in a real browser: the mock models GeoFS's real, confirmed-by-live-testing quirks (`geofs.autopilot.turnOn()` re-captures current heading/altitude/speed as its own bugs, so targets must be set after turning the autopilot on; `aircraft.instance.place()` does not touch velocity, so `placeAircraft` writes `rigidBody.v_linearVelocity` directly; engines start via `controls.engine.on`, not a callable setter), but any further GeoFS API surface changes can only be confirmed in an actual GeoFS session.
-
-## Implementation
-
-The follower writes a dynamic east-north-up vector to `weather.currentWindVector`. GeoFS uses this vector in its native air-relative velocity and airfoil calculations. The script therefore does not replace the Boeing 777 flight model.
-
-The current injection is one wake vector at the aircraft reference point. It does not yet apply different velocity values across the wing span. The next fidelity step is described in `docs/DESIGN.md`.
+The intended next step is to induce a `LambOseenVortexPairWake` (or a
+multi-aircraft superposition of several) and have a higher-level controller
+perturb the aircraft's lateral/vertical offset relative to the wake to
+minimize some cost (e.g. induced drag or fuel flow) — a live extremum-seeking
+or Bayesian-optimization loop sitting above `Navigator`. Because `WindField`
+and `Navigator` are both narrow, swappable interfaces, that loop can be built
+as a new `WindField` (multi-vortex superposition) and a new `Navigator`
+(perturb-and-observe) without changing `Aircraft`, `Autopilot`, or the
+dynamics/aero code at all.
