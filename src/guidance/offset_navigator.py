@@ -76,9 +76,16 @@ class OffsetNavigator:
         if abs(lateral_error_m) < self.arrival_tolerance_m and abs(altitude_error_m) < self.arrival_tolerance_m:
             self._latched_arrived = True
 
+        # Target point on the offset track abeam the aircraft right now (not
+        # the lookahead-shifted virtual_target above) -- what "target vs
+        # current position" should actually plot converging together.
+        target_ne = self._origin_ne_m + along_track_m * self._track_dir + self.target_lateral_m * self._track_perp_right
+
         return GuidanceCommand(
             bank_angle_cmd_rad=bank_angle_cmd_rad,
             climb_rate_cmd_m_s=climb_rate_cmd_m_s,
             airspeed_cmd_m_s=self.cruise_airspeed_m_s,
             arrived=self._latched_arrived,
+            target_north_m=float(target_ne[0]),
+            target_east_m=float(target_ne[1]),
         )

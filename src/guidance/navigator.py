@@ -55,4 +55,6 @@ class Navigator:
             climb_rate_cmd_m_s=climb_rate_cmd_m_s,
             airspeed_cmd_m_s=self.cruise_airspeed_m_s,
             arrived=arrived,
+            target_north_m=float(self.target_xy_m[0]),
+            target_east_m=float(self.target_xy_m[1]),
         )

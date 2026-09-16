@@ -118,6 +118,10 @@ class JSBSimAircraft:
         u, v, w = self.state.velocity_body_m_s
         return float(np.arctan2(v, np.hypot(u, w)))
 
+    @property
+    def total_thrust_lbf(self) -> float:
+        return float(self.fdm["propulsion/engine/thrust-lbs"] + self.fdm["propulsion/engine[1]/thrust-lbs"])
+
     def get_cl_cd(self, wind_field=None) -> tuple:
         qbar_psf = self.fdm["aero/qbar-psf"]
         sw_sqft = self.fdm["metrics/Sw-sqft"]
