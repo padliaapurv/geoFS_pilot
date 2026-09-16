@@ -136,7 +136,7 @@ class SimWorker:
 
             if props_sock is not None and i % surface_push_stride == 0:
                 try:
-                    fg.push_surface_properties(props_sock, control_command)
+                    fg.push_surface_properties(props_sock, control_command, aircraft.limits_rad)
                 except OSError:
                     props_sock = None
 

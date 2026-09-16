@@ -105,6 +105,10 @@ class JSBSimAircraft:
         )
 
     @property
+    def limits_rad(self) -> dict:
+        return dict(self._limits_rad)
+
+    @property
     def airspeed_m_s(self) -> float:
         return float(np.linalg.norm(self.state.velocity_body_m_s))
 

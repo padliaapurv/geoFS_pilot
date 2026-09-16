@@ -168,40 +168,32 @@ def set_chase_view(sock: socket.socket) -> None:
     logger.info("Switched FlightGear to chase view (view-number=%d)", CHASE_VIEW_NUMBER)
 
 
-# The 777-VMD/FGAddon-style aircraft drives its aileron/elevator/rudder/gear
-# animations from its own internal FCS/systems properties (e.g.
-# "fcs/rudder/final-deg"), not from the generic "surface-positions/*" tree
-# that FlightGear's external-FDM decoder populates from the incoming
-# native-fdm packet -- those internal properties are normally computed by
-# the aircraft's own Nasal systems from cockpit control input, which never
-# happens in --fdm=external mode (there's no local pilot driving them), so
-# without this the surfaces/gear just sit at whatever they defaulted to.
-# We push our own commanded values onto them directly instead.
-GEAR_UNIT_COUNT = 3
-
-
+# The installed 777 (FGAddon) drives its aileron/elevator/rudder animation
+# through a full property-rule fly-by-wire network (Systems/777-fbw.xml,
+# 777-fcs.xml) that RECOMPUTES fcs/*/final-deg from scratch every frame --
+# an earlier version of this code wrote final-deg directly, which just got
+# overwritten again on the next frame (that's why it never visibly moved).
+# The actual stable root inputs, traced through that filter network, are
+# the same generic axes any joystick/yoke drives: controls/flight/aileron
+# /elevator/rudder/elevator-trim (normalized -1..1), and for gear,
+# controls/gear/gear-down (read by Nasal/Hydraulics.nas, which then drives
+# the real retraction animation itself, with its own actuator timing).
+# These are stable, one-shot-settable properties -- no continuous fight
+# with a recomputing filter -- so gear only needs to be pushed once.
 def push_gear_up(sock: socket.socket) -> None:
-    _send_props(sock, {f"gear/gear[{i}]/position-norm": 0.0 for i in range(GEAR_UNIT_COUNT)})
+    _send_props(sock, {"controls/gear/gear-down": 0.0})
     logger.info("Commanded gear up on the FlightGear model")
 
 
-def push_surface_properties(sock: socket.socket, control_command) -> None:
-    aileron_deg = np.degrees(control_command.aileron_rad)
-    elevator_deg = np.degrees(control_command.elevator_rad)
-    rudder_deg = np.degrees(control_command.rudder_rad)
-    stabilizer_deg = np.degrees(control_command.elevator_trim_rad)
+def push_surface_properties(sock: socket.socket, control_command, limits_rad: dict) -> None:
+    def normalized(value_rad: float, key: str) -> float:
+        return float(np.clip(value_rad / limits_rad[key], -1.0, 1.0))
+
     _send_props(sock, {
-        "fcs/rudder/final-deg": rudder_deg,
-        "fcs/left-elevator/final-deg": elevator_deg,
-        "fcs/right-elevator/final-deg": elevator_deg,
-        "fcs/stabilizer/final-deg": stabilizer_deg,
-        # Differential: opposite sign each side, as a real aileron pair.
-        # Sign convention here is best-effort (not visually verified) --
-        # flip if the ailerons appear to deflect backwards in FlightGear.
-        "fcs/left-out-aileron/final-deg": -aileron_deg,
-        "fcs/left-in-aileron/final-deg": -aileron_deg,
-        "fcs/right-out-aileron/final-deg": aileron_deg,
-        "fcs/right-in-aileron/final-deg": aileron_deg,
+        "controls/flight/aileron": normalized(control_command.aileron_rad, "aileron_rad"),
+        "controls/flight/elevator": normalized(control_command.elevator_rad, "elevator_rad"),
+        "controls/flight/rudder": normalized(control_command.rudder_rad, "rudder_rad"),
+        "controls/flight/elevator-trim": normalized(control_command.elevator_trim_rad, "elevator_trim_rad"),
     }, wait_for_reply=False)
 
 
@@ -317,7 +309,7 @@ def main():
 
         if props_sock is not None and i % surface_push_stride == 0:
             try:
-                push_surface_properties(props_sock, control_command)
+                push_surface_properties(props_sock, control_command, aircraft.limits_rad)
             except OSError as exc:
                 logger.warning("Lost FlightGear telnet props connection: %s", exc)
                 props_sock = None
