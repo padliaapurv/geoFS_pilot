@@ -91,6 +91,10 @@ class JSBSimAircraft:
         self.fdm.get_propulsion().init_running(-1)  # ensure engines are still running post-trim
 
         self.fdm["fcs/throttle-cmd-norm[1]"] = self.fdm["fcs/throttle-cmd-norm"]
+        # This whole sim is a cruise-flight scenario -- gear starts down by
+        # default in JSBSim's ground-reactions model, which the FlightGear
+        # visualization otherwise renders as gear-out for the whole flight.
+        self.fdm["gear/gear-cmd-norm"] = 0.0
         self.state = self._read_state()
 
         logger.info(

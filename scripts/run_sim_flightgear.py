@@ -24,6 +24,7 @@ import numpy as np
 from src.aircraft.jsbsim_aircraft import JSBSimAircraft
 from src.atmosphere.factory import build_wind_field
 from src.guidance.navigator import Navigator
+from src.guidance.offset_navigator import OffsetNavigator
 from src.guidance.autopilot import Autopilot
 from src.aircraft.geometry import euler_from_dcm
 from src.sim.logger import setup_logging
@@ -117,26 +118,91 @@ def launch_flightgear_native(altitude_m: float, heading_deg: float) -> subproces
     return subprocess.Popen(args)
 
 
-def set_chase_view(timeout_s: float = 90.0) -> None:
-    # Command-line --prop: values for view state get clobbered once
-    # FlightGear's view manager finishes its own init, so this has to be
-    # set after startup, over the props/telnet interface instead. The
-    # telnet server itself only comes up once FlightGear finishes loading
+def connect_props(timeout_s: float = 90.0) -> socket.socket:
+    # The telnet props server only comes up once FlightGear finishes loading
     # the aircraft model/textures -- slow and hard to bound for a heavy
     # payware-grade model like the 777, so retry rather than fixed-wait.
+    # Kept open for the whole run (chase view + gear + surface pushes all
+    # share this one connection) rather than reconnecting for each command.
     deadline = time.time() + timeout_s
     last_exc = None
     while time.time() < deadline:
         try:
-            with socket.create_connection(("localhost", TELNET_PORT), timeout=5.0) as sock:
-                sock.sendall(f"set /sim/current-view/view-number {CHASE_VIEW_NUMBER}\r\n".encode("ascii"))
-                sock.recv(4096)
-            logger.info("Switched FlightGear to chase view (view-number=%d)", CHASE_VIEW_NUMBER)
-            return
+            sock = socket.create_connection(("localhost", TELNET_PORT), timeout=5.0)
+            sock.settimeout(5.0)
+            return sock
         except OSError as exc:
             last_exc = exc
             time.sleep(2.0)
-    logger.warning("Could not set chase view over telnet after %.0fs: %s", timeout_s, last_exc)
+    raise TimeoutError(f"Could not connect to FlightGear telnet props server after {timeout_s:.0f}s: {last_exc}")
+
+
+def _send_props(sock: socket.socket, prop_values: dict, wait_for_reply: bool = True) -> None:
+    cmds = "".join(f"set {path} {value:.4f}\r\n" for path, value in prop_values.items())
+    sock.sendall(cmds.encode("ascii"))
+    if not wait_for_reply:
+        # Fire-and-forget: waiting for FlightGear's telnet ack on every call
+        # (blocking for however long that round-trip takes) stole enough
+        # wall-clock time from the real-time pacing loop to make a 90s run
+        # take over 3 minutes. The unread ack bytes are tiny and get
+        # drained non-blockingly on a later call instead.
+        try:
+            sock.setblocking(False)
+            sock.recv(65536)
+        except OSError:
+            pass
+        finally:
+            sock.setblocking(True)
+        return
+    try:
+        sock.recv(4096)
+    except OSError:
+        pass
+
+
+def set_chase_view(sock: socket.socket) -> None:
+    # Command-line --prop: values for view state get clobbered once
+    # FlightGear's view manager finishes its own init, so this has to be
+    # set after startup, over the props/telnet interface instead.
+    _send_props(sock, {"/sim/current-view/view-number": CHASE_VIEW_NUMBER})
+    logger.info("Switched FlightGear to chase view (view-number=%d)", CHASE_VIEW_NUMBER)
+
+
+# The 777-VMD/FGAddon-style aircraft drives its aileron/elevator/rudder/gear
+# animations from its own internal FCS/systems properties (e.g.
+# "fcs/rudder/final-deg"), not from the generic "surface-positions/*" tree
+# that FlightGear's external-FDM decoder populates from the incoming
+# native-fdm packet -- those internal properties are normally computed by
+# the aircraft's own Nasal systems from cockpit control input, which never
+# happens in --fdm=external mode (there's no local pilot driving them), so
+# without this the surfaces/gear just sit at whatever they defaulted to.
+# We push our own commanded values onto them directly instead.
+GEAR_UNIT_COUNT = 3
+
+
+def push_gear_up(sock: socket.socket) -> None:
+    _send_props(sock, {f"gear/gear[{i}]/position-norm": 0.0 for i in range(GEAR_UNIT_COUNT)})
+    logger.info("Commanded gear up on the FlightGear model")
+
+
+def push_surface_properties(sock: socket.socket, control_command) -> None:
+    aileron_deg = np.degrees(control_command.aileron_rad)
+    elevator_deg = np.degrees(control_command.elevator_rad)
+    rudder_deg = np.degrees(control_command.rudder_rad)
+    stabilizer_deg = np.degrees(control_command.elevator_trim_rad)
+    _send_props(sock, {
+        "fcs/rudder/final-deg": rudder_deg,
+        "fcs/left-elevator/final-deg": elevator_deg,
+        "fcs/right-elevator/final-deg": elevator_deg,
+        "fcs/stabilizer/final-deg": stabilizer_deg,
+        # Differential: opposite sign each side, as a real aileron pair.
+        # Sign convention here is best-effort (not visually verified) --
+        # flip if the ailerons appear to deflect backwards in FlightGear.
+        "fcs/left-out-aileron/final-deg": -aileron_deg,
+        "fcs/left-in-aileron/final-deg": -aileron_deg,
+        "fcs/right-out-aileron/final-deg": aileron_deg,
+        "fcs/right-in-aileron/final-deg": aileron_deg,
+    }, wait_for_reply=False)
 
 
 def run_native(trim_cfg: dict, args) -> None:
@@ -152,7 +218,9 @@ def run_native(trim_cfg: dict, args) -> None:
         )
         logger.info("Waiting for FlightGear to start up...")
         time.sleep(20.0)
-        set_chase_view()
+        props_sock = connect_props()
+        set_chase_view(props_sock)
+        props_sock.close()
     else:
         logger.info("Assuming FlightGear is already running (native dynamics)")
 
@@ -196,6 +264,7 @@ def main():
     )
 
     fg_process = None
+    props_sock = None
     if not args.no_launch:
         fg_process = launch_flightgear(
             altitude_m=trim_cfg["cruise_altitude_m"],
@@ -204,14 +273,25 @@ def main():
         )
         logger.info("Waiting for FlightGear to start up...")
         time.sleep(20.0)
-        set_chase_view()
+        props_sock = connect_props()
+        set_chase_view(props_sock)
+        push_gear_up(props_sock)
     else:
         logger.info("Assuming FlightGear is already running and listening on port %d", NATIVE_FDM_PORT)
 
     wind_field = build_wind_field(wake_config)
-    navigator = Navigator(
-        sim_config["guidance"], cruise_altitude_m=trim_cfg["cruise_altitude_m"], cruise_airspeed_m_s=aircraft.airspeed_m_s,
-    )
+    guidance_mode = sim_config.get("flightgear", {}).get("guidance_mode", "straight_offset")
+    if guidance_mode == "waypoint":
+        navigator = Navigator(
+            sim_config["guidance"], cruise_altitude_m=trim_cfg["cruise_altitude_m"], cruise_airspeed_m_s=aircraft.airspeed_m_s,
+        )
+    elif guidance_mode == "straight_offset":
+        navigator = OffsetNavigator(
+            sim_config["guidance"], initial_state=aircraft.state,
+            cruise_altitude_m=trim_cfg["cruise_altitude_m"], cruise_airspeed_m_s=aircraft.airspeed_m_s,
+        )
+    else:
+        raise ValueError(f"Unknown flightgear.guidance_mode: {guidance_mode!r} (expected 'waypoint' or 'straight_offset')")
     _, trim_pitch_attitude_rad, _ = euler_from_dcm(aircraft.state.attitude_dcm)
     autopilot = Autopilot(
         sim_config["guidance"],
@@ -224,12 +304,23 @@ def main():
     steps = int(args.duration_s / dt)
     logger.info("Streaming %.0fs of simulation to FlightGear on UDP port %d ...", args.duration_s, NATIVE_FDM_PORT)
 
+    # Pushing surface properties every step would mean a telnet round-trip
+    # at 20Hz; the surfaces don't need that -- do it at ~5Hz instead.
+    surface_push_stride = max(1, round(0.2 / dt))
+
     wall_clock_start = time.time()
     for i in range(steps):
         state = aircraft.state
         guidance_command = navigator.compute(state)
         control_command = autopilot.compute_control(state, guidance_command, dt)
         aircraft.step(control_command, wind_field, dt)
+
+        if props_sock is not None and i % surface_push_stride == 0:
+            try:
+                push_surface_properties(props_sock, control_command)
+            except OSError as exc:
+                logger.warning("Lost FlightGear telnet props connection: %s", exc)
+                props_sock = None
 
         # Real-time pacing: sleep off however much wall-clock time is left
         # in this step, so FlightGear receives roughly one update per dt.
@@ -241,6 +332,8 @@ def main():
     logger.info("Done streaming. FlightGear window stays open; close it manually when finished.")
     if fg_process is not None:
         logger.info("(FlightGear PID: %d)", fg_process.pid)
+    if props_sock is not None:
+        props_sock.close()
 
 
 if __name__ == "__main__":

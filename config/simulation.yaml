@@ -19,6 +19,12 @@ dynamics_backend: "jsbsim"
 #            Useful as an independent reference to compare our sim against.
 flightgear:
   dynamics: "external"
+  # "waypoint" (original) = Navigator: fly to guidance.target_xy_m (absolute
+  #            north/east from trim start) and hold once inside arrival_radius_m.
+  # "straight_offset" (default) = OffsetNavigator: fly straight along the
+  #            initial heading, then move to and hold guidance.lateral_offset's
+  #            (lateral, vertical) offset from that original track.
+  guidance_mode: "straight_offset"
 
 trim:
   cruise_altitude_m: 10668.0   # FL350
@@ -64,6 +70,16 @@ guidance:
     speed:
       kp: 0.01
       ki: 0.0
+  # Only used when flightgear.guidance_mode == "straight_offset".
+  lateral_offset:
+    target_lateral_m: 800.0      # + = right of the initial track, - = left
+    target_vertical_m: 0.0       # + = above cruise altitude, - = below
+    # Same pure-pursuit shape as the waypoint mode's Navigator, just aimed at
+    # a synthetic point this far ahead along the track (offset laterally by
+    # the remaining error) instead of a fixed point -- smaller means a
+    # sharper/faster correction, larger means a gentler one.
+    lookahead_m: 25000.0
+    arrival_tolerance_m: 50.0       # both lateral and vertical error must be under this to latch "arrived"
   climb_rate_to_pitch:
     # Outer loop: pitch-attitude offset from trim (rad) per (m/s climb-rate error).
     # Kept small: at cruise speed even a couple degrees of pitch produces a
