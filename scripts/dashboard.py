@@ -101,7 +101,7 @@ class SimWorker:
         time.sleep(20.0)
         props_sock = fg.connect_props()
         fg.set_chase_view(props_sock)
-        fg.push_gear_up(props_sock)
+        fg.power_up_aircraft_systems(props_sock)
 
         wind_field = build_wind_field(wake_config)
         guidance_mode = sim_config.get("flightgear", {}).get("guidance_mode", "straight_offset")

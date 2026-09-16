@@ -137,27 +137,53 @@ def connect_props(timeout_s: float = 90.0) -> socket.socket:
     raise TimeoutError(f"Could not connect to FlightGear telnet props server after {timeout_s:.0f}s: {last_exc}")
 
 
+def _drain(sock: socket.socket) -> None:
+    # Discards any bytes left over from a previous fire-and-forget command
+    # (or a reply we didn't fully read) so the next command's reply can't
+    # get desynced -- reading a stale leftover chunk instead of the actual
+    # reply to the command just sent, or blocking on a recv() that will
+    # never see the response it's actually waiting for.
+    sock.setblocking(False)
+    try:
+        while sock.recv(65536):
+            pass
+    except OSError:
+        pass
+    finally:
+        sock.setblocking(True)
+
+
+def _read_until_prompt(sock: socket.socket) -> str:
+    # FlightGear's telnet props server ends every response with a "/>"
+    # prompt; a single recv() call isn't guaranteed to capture a whole
+    # reply (it can arrive split across TCP packets), so loop until we've
+    # actually seen the terminator instead of trusting one read.
+    buf = b""
+    while b"/>" not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        buf += chunk
+    return buf.decode("ascii", errors="replace")
+
+
 def _send_props(sock: socket.socket, prop_values: dict, wait_for_reply: bool = True) -> None:
+    _drain(sock)
     cmds = "".join(f"set {path} {value:.4f}\r\n" for path, value in prop_values.items())
     sock.sendall(cmds.encode("ascii"))
     if not wait_for_reply:
         # Fire-and-forget: waiting for FlightGear's telnet ack on every call
         # (blocking for however long that round-trip takes) stole enough
         # wall-clock time from the real-time pacing loop to make a 90s run
-        # take over 3 minutes. The unread ack bytes are tiny and get
-        # drained non-blockingly on a later call instead.
-        try:
-            sock.setblocking(False)
-            sock.recv(65536)
-        except OSError:
-            pass
-        finally:
-            sock.setblocking(True)
+        # take over 3 minutes. The unread ack gets drained on the next call.
         return
-    try:
-        sock.recv(4096)
-    except OSError:
-        pass
+    _read_until_prompt(sock)
+
+
+def _get_prop(sock: socket.socket, path: str) -> str:
+    _drain(sock)
+    sock.sendall(f"get {path}\r\n".encode("ascii"))
+    return _read_until_prompt(sock)
 
 
 def set_chase_view(sock: socket.socket) -> None:
@@ -173,16 +199,43 @@ def set_chase_view(sock: socket.socket) -> None:
 # 777-fcs.xml) that RECOMPUTES fcs/*/final-deg from scratch every frame --
 # an earlier version of this code wrote final-deg directly, which just got
 # overwritten again on the next frame (that's why it never visibly moved).
-# The actual stable root inputs, traced through that filter network, are
-# the same generic axes any joystick/yoke drives: controls/flight/aileron
-# /elevator/rudder/elevator-trim (normalized -1..1), and for gear,
-# controls/gear/gear-down (read by Nasal/Hydraulics.nas, which then drives
-# the real retraction animation itself, with its own actuator timing).
-# These are stable, one-shot-settable properties -- no continuous fight
-# with a recomputing filter -- so gear only needs to be pushed once.
-def push_gear_up(sock: socket.socket) -> None:
-    _send_props(sock, {"controls/gear/gear-down": 0.0})
-    logger.info("Commanded gear up on the FlightGear model")
+# The real root inputs, traced through that filter network, are the same
+# generic axes any joystick/yoke drives: controls/flight/aileron/elevator
+# /rudder/elevator-trim (normalized -1..1).
+#
+# Those are further gated on realistic hydraulic pump availability
+# (Nasal/Hydraulics.nas), which traces back to engine/electrical state that
+# --fdm=external never provides (no internal FDM means no engine-driven
+# pumps ever "start"), so we fake the two inputs that chain bottoms out on:
+# both engines reporting as running (feeds the pump system's power-source
+# count) and the center hydraulic system's electric pump switch (a real
+# cockpit switch, off by default). Landing gear needed no such workaround
+# in the end -- see JSBSimAircraft.trim_at's "gear/gear-pos-norm" fix,
+# which corrects it at the source (our own simulated aircraft's reported
+# gear state), rather than fighting FlightGear's display of it here.
+POWER_UP_PROPS = {
+    "engines/engine/run": 1.0,
+    "engines/engine[1]/run": 1.0,
+    "controls/hydraulics/system[1]/C2ELEC-switch": 1.0,
+}
+
+
+def power_up_aircraft_systems(sock: socket.socket, timeout_s: float = 30.0) -> None:
+    # Something in this aircraft's own startup sequence resets these switches
+    # back to their cold-and-dark default a few seconds after the model
+    # loads (observed: setting them right after chase-view got silently
+    # reverted; setting them well after that startup window is stable) --
+    # so verify the write actually stuck rather than trusting a fixed wait,
+    # and keep re-asserting until it does.
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        _send_props(sock, POWER_UP_PROPS)
+        time.sleep(1.0)
+        readback = _get_prop(sock, "controls/hydraulics/system[1]/C2ELEC-switch")
+        if "true" in readback:
+            logger.info("Powered up engine/hydraulics state so gear and control surfaces can move")
+            return
+    logger.warning("Could not get the aircraft's hydraulics switch to stick after %.0fs; gear/surfaces may stay static", timeout_s)
 
 
 def push_surface_properties(sock: socket.socket, control_command, limits_rad: dict) -> None:
@@ -267,7 +320,7 @@ def main():
         time.sleep(20.0)
         props_sock = connect_props()
         set_chase_view(props_sock)
-        push_gear_up(props_sock)
+        power_up_aircraft_systems(props_sock)
     else:
         logger.info("Assuming FlightGear is already running and listening on port %d", NATIVE_FDM_PORT)
 

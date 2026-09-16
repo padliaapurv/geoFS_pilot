@@ -92,9 +92,16 @@ class JSBSimAircraft:
 
         self.fdm["fcs/throttle-cmd-norm[1]"] = self.fdm["fcs/throttle-cmd-norm"]
         # This whole sim is a cruise-flight scenario -- gear starts down by
-        # default in JSBSim's ground-reactions model, which the FlightGear
-        # visualization otherwise renders as gear-out for the whole flight.
+        # default in JSBSim's ground-reactions model. "gear/gear-cmd-norm"
+        # alone does nothing here (our generated aircraft has no FCS
+        # actuator wired to it), and per-unit "gear/unit[i]/pos-norm" is a
+        # separate raw value that doesn't affect gear-state reporting
+        # either -- "gear/gear-pos-norm" (the combined, RW property) is the
+        # one that actually sticks and is what feeds the FLIGHTGEAR native-
+        # fdm output's per-gear "down" state (FGOutputFG::GetGearUnitDown),
+        # i.e. what the FlightGear visualization actually renders.
         self.fdm["gear/gear-cmd-norm"] = 0.0
+        self.fdm["gear/gear-pos-norm"] = 0.0
         self.state = self._read_state()
 
         logger.info(
